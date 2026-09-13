@@ -75,6 +75,19 @@ describe("OutboundStore", () => {
     );
   });
 
+  it("reviews multiple contacts atomically", () => {
+    const { company } = campaignAndCompany();
+    store.reviewCompany(company.id, "APPROVED");
+    const first = store.createContact({ companyId: company.id, name: "First" });
+    const second = store.createContact({ companyId: company.id, name: "Second" });
+    assert.deepEqual(
+      store.reviewContacts([first.id, second.id], "APPROVED").map(({ status }) => status),
+      ["APPROVED", "APPROVED"],
+    );
+    assert.throws(() => store.reviewContacts([first.id, 999], "REJECTED"), /Contact not found/);
+    assert.equal(store.getContact(first.id)?.status, "APPROVED");
+  });
+
   it("enforces the outreach approval state machine", () => {
     const { company } = campaignAndCompany();
     store.reviewCompany(company.id, "APPROVED");

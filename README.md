@@ -48,6 +48,8 @@ npm run companies:approve -- 3 6 8 9
 npm run companies:reject -- 4 7
 npm run contacts:discover -- 1
 npm run contacts:list -- 1
+npm run contacts:approve -- 1 2 3
+npm run contacts:reject -- 4 5
 ```
 
 The optional argument to `companies:list` is a campaign ID. Company review

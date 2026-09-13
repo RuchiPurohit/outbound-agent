@@ -164,9 +164,16 @@ export class OutboundStore {
   }
 
   reviewContact(id: number, decision: Exclude<ReviewStatus, "DISCOVERED">): Contact {
-    this.requireContact(id);
-    this.db.prepare("UPDATE contacts SET status = ? WHERE id = ?").run(decision, id);
-    return this.getContact(id)!;
+    return this.reviewContacts([id], decision)[0];
+  }
+
+  reviewContacts(ids: number[], decision: Exclude<ReviewStatus, "DISCOVERED">): Contact[] {
+    if (ids.length === 0) throw new WorkflowError("At least one contact ID is required");
+    return this.db.transaction(() => ids.map((id) => {
+      this.requireContact(id);
+      this.db.prepare("UPDATE contacts SET status = ? WHERE id = ?").run(decision, id);
+      return this.getContact(id)!;
+    }))();
   }
 
   createOutreach(input: { contactId: number; subject: string; body: string }): Outreach {

@@ -22,3 +22,12 @@ export function parseCompanyIds(args: string[]): number[] {
     return id;
   });
 }
+
+export function parseContactIds(args: string[]): number[] {
+  if (args.length === 0) throw new Error("Provide at least one contact ID");
+  return args.map((value) => {
+    const id = Number(value);
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`Invalid contact ID: ${value}`);
+    return id;
+  });
+}
