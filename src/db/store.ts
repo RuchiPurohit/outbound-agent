@@ -163,6 +163,43 @@ export class OutboundStore {
     return (rows as Row[]).map(contactFromRow);
   }
 
+  recordEmailDiscovery(input: {
+    contactId: number;
+    emailStatus: Exclude<EmailStatus, "UNKNOWN">;
+    email?: string;
+    sourceUrl?: string;
+    notes?: string;
+  }): Contact {
+    return this.db.transaction(() => {
+      const contact = this.requireContact(input.contactId);
+      if (contact.status !== "APPROVED") {
+        throw new WorkflowError("Email discovery is only allowed for APPROVED contacts");
+      }
+
+      const found = input.emailStatus === "PUBLICLY_LISTED" || input.emailStatus === "VERIFIED";
+      if (found && (!input.email || !input.sourceUrl)) {
+        throw new WorkflowError("A found email requires the exact address and a source URL");
+      }
+      if (!found && input.email) {
+        throw new WorkflowError("EMAIL_NOT_FOUND cannot include an email address");
+      }
+
+      this.db.prepare("UPDATE contacts SET email = ?, email_status = ? WHERE id = ?")
+        .run(found ? input.email : null, input.emailStatus, input.contactId);
+
+      if (found) {
+        this.createResearchRecord({
+          companyId: contact.companyId,
+          contactId: contact.id,
+          signal: `Professional business email ${input.emailStatus.toLowerCase()}: ${input.email}`,
+          sourceUrl: input.sourceUrl!,
+          notes: input.notes ?? "Email discovery evidence",
+        });
+      }
+      return this.getContact(input.contactId)!;
+    })();
+  }
+
   reviewContact(id: number, decision: Exclude<ReviewStatus, "DISCOVERED">): Contact {
     return this.reviewContacts([id], decision)[0];
   }

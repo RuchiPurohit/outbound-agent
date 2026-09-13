@@ -47,7 +47,7 @@ describe("OutboundStore", () => {
     diskDb.close();
     const reopenedDb = openDatabase(filename);
     assert.equal(new OutboundStore(reopenedDb).getCampaign(campaign.id)?.name, "Disk campaign");
-    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 2);
+    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 3);
     reopenedDb.close();
     rmSync(directory, { recursive: true });
   });
@@ -86,6 +86,51 @@ describe("OutboundStore", () => {
     );
     assert.throws(() => store.reviewContacts([first.id, 999], "REJECTED"), /Contact not found/);
     assert.equal(store.getContact(first.id)?.status, "APPROVED");
+  });
+
+  it("records sourced email discovery only for approved contacts", () => {
+    const { company } = campaignAndCompany();
+    store.reviewCompany(company.id, "APPROVED");
+    const contact = store.createContact({ companyId: company.id, name: "Email Target" });
+    assert.throws(() => store.recordEmailDiscovery({
+      contactId: contact.id,
+      emailStatus: "PUBLICLY_LISTED",
+      email: "target@example.com",
+      sourceUrl: "https://example.com/team",
+    }), /APPROVED contacts/);
+
+    store.reviewContact(contact.id, "APPROVED");
+    assert.throws(() => store.recordEmailDiscovery({
+      contactId: contact.id,
+      emailStatus: "PUBLICLY_LISTED",
+      email: "target@example.com",
+    }), /source URL/);
+
+    const updated = store.recordEmailDiscovery({
+      contactId: contact.id,
+      emailStatus: "PUBLICLY_LISTED",
+      email: "target@example.com",
+      sourceUrl: "https://example.com/team",
+    });
+    assert.equal(updated.email, "target@example.com");
+    assert.equal(updated.emailStatus, "PUBLICLY_LISTED");
+    assert.equal(store.listResearch(company.id).at(-1)?.sourceUrl, "https://example.com/team");
+  });
+
+  it("stores EMAIL_NOT_FOUND without an address", () => {
+    const { company } = campaignAndCompany();
+    store.reviewCompany(company.id, "APPROVED");
+    const contact = store.createContact({ companyId: company.id, name: "No Email" });
+    store.reviewContact(contact.id, "APPROVED");
+    assert.throws(() => store.recordEmailDiscovery({
+      contactId: contact.id,
+      emailStatus: "EMAIL_NOT_FOUND",
+      email: "guessed@example.com",
+    }), /cannot include/);
+    assert.equal(store.recordEmailDiscovery({
+      contactId: contact.id,
+      emailStatus: "EMAIL_NOT_FOUND",
+    }).emailStatus, "EMAIL_NOT_FOUND");
   });
 
   it("enforces the outreach approval state machine", () => {

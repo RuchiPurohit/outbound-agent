@@ -24,7 +24,8 @@ if (campaignId !== undefined && (!Number.isSafeInteger(campaignId) || campaignId
         Score: contact.roleScore ?? "UNKNOWN",
         Profile: contact.linkedinUrl ?? "UNKNOWN",
         Status: contact.status,
-        Email: contact.emailStatus,
+        Email: contact.email ?? "UNKNOWN",
+        EmailStatus: contact.emailStatus,
       }));
 
     if (rows.length === 0) console.log("No contacts found.");

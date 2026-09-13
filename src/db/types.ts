@@ -1,6 +1,6 @@
 export type CampaignStatus = "DRAFT" | "ACTIVE" | "PAUSED" | "COMPLETED";
 export type ReviewStatus = "DISCOVERED" | "APPROVED" | "REJECTED";
-export type EmailStatus = "UNKNOWN" | "VERIFIED" | "EMAIL_NOT_FOUND";
+export type EmailStatus = "UNKNOWN" | "PUBLICLY_LISTED" | "VERIFIED" | "EMAIL_NOT_FOUND";
 export type OutreachStatus = "DRAFT" | "APPROVED" | "READY_TO_SEND" | "SENT" | "REPLIED";
 
 export interface Campaign {

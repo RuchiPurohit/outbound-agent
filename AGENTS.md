@@ -154,3 +154,9 @@ When the user asks to "run contact discovery", read and execute
 ID supplied by the user; otherwise use the most recently created campaign that
 has approved companies. Never run contact discovery for rejected or merely
 discovered companies.
+
+When the user asks to "run email discovery", read and execute
+`prompts/email-discovery.md` against the live SQLite database. Use a campaign ID
+supplied by the user; otherwise use the most recently created campaign that has
+approved contacts. Process only approved contacts and never infer an address
+from an email pattern.
