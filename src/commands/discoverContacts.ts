@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { openDatabase } from "../db/database.js";
 import { OutboundStore } from "../db/store.js";
+import { resolveCodexExecutable } from "./codexExecutable.js";
 
 const rawCampaignId = process.argv[2];
 const campaignId = Number(rawCampaignId);
@@ -25,6 +26,16 @@ if (!rawCampaignId || !Number.isSafeInteger(campaignId) || campaignId <= 0) {
     console.error("Approve companies before running contact discovery.");
     process.exitCode = 1;
   } else {
+    let codexExecutable: string;
+    try {
+      codexExecutable = resolveCodexExecutable();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Error: ${message}`);
+      process.exitCode = 1;
+      process.exit();
+    }
+
     const prompt = [
       "Read AGENTS.md, docs/ICP.md, and prompts/contact-discovery.md.",
       `Run contact discovery for campaign ${campaignId}.`,
@@ -40,16 +51,16 @@ if (!rawCampaignId || !Number.isSafeInteger(campaignId) || campaignId <= 0) {
     );
 
     const result = spawnSync(
-      "codex",
+      codexExecutable,
       [
         "--search",
         "-C",
         process.cwd(),
-        "exec",
         "--sandbox",
         "workspace-write",
         "--ask-for-approval",
         "never",
+        "exec",
         prompt,
       ],
       { stdio: "inherit" },

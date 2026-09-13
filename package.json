@@ -11,6 +11,7 @@
     "companies:approve": "npm run build --silent && node dist/src/commands/approveCompanies.js",
     "companies:reject": "npm run build --silent && node dist/src/commands/rejectCompanies.js",
     "contacts:discover": "npm run build --silent && node dist/src/commands/discoverContacts.js",
+    "contacts:list": "npm run build --silent && node dist/src/commands/listContacts.js",
     "test": "npm run build && node --test dist/test",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

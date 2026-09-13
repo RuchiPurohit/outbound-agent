@@ -47,6 +47,7 @@ npm run companies:list -- 1
 npm run companies:approve -- 3 6 8 9
 npm run companies:reject -- 4 7
 npm run contacts:discover -- 1
+npm run contacts:list -- 1
 ```
 
 The optional argument to `companies:list` is a campaign ID. Company review
@@ -57,3 +58,11 @@ changed.
 companies, then runs the installed Codex CLI with live web search and the
 instructions in `prompts/contact-discovery.md`. It writes verified contacts to
 SQLite but does not research email addresses or create outreach.
+
+If `codex` is not on the shell `PATH`, the command also checks common VS Code,
+VS Code Insiders, Cursor, and Windsurf extension locations. You can override
+discovery explicitly:
+
+```sh
+CODEX_CLI_PATH=/absolute/path/to/codex npm run contacts:discover -- 1
+```
