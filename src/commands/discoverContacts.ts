@@ -1,0 +1,65 @@
+import { spawnSync } from "node:child_process";
+import { openDatabase } from "../db/database.js";
+import { OutboundStore } from "../db/store.js";
+
+const rawCampaignId = process.argv[2];
+const campaignId = Number(rawCampaignId);
+
+if (!rawCampaignId || !Number.isSafeInteger(campaignId) || campaignId <= 0) {
+  console.error("Usage: npm run contacts:discover -- <campaign-id>");
+  process.exitCode = 1;
+} else {
+  const db = openDatabase();
+  const store = new OutboundStore(db);
+  const campaign = store.getCampaign(campaignId);
+  const approvedCompanies = campaign
+    ? store.listCompanies({ campaignId, status: "APPROVED" })
+    : [];
+  db.close();
+
+  if (!campaign) {
+    console.error(`Error: campaign ${campaignId} was not found.`);
+    process.exitCode = 1;
+  } else if (approvedCompanies.length === 0) {
+    console.error(`Error: campaign ${campaignId} has no APPROVED companies.`);
+    console.error("Approve companies before running contact discovery.");
+    process.exitCode = 1;
+  } else {
+    const prompt = [
+      "Read AGENTS.md, docs/ICP.md, and prompts/contact-discovery.md.",
+      `Run contact discovery for campaign ${campaignId}.`,
+      "Use only APPROVED companies from the live SQLite database.",
+      "Persist verified results in SQLite and show the ranked contacts.",
+      "Do not research or infer email addresses, and do not create outreach.",
+      "Complete the workflow; do not merely explain how to do it.",
+    ].join(" ");
+
+    console.log(
+      `Starting Codex contact discovery for campaign ${campaignId} `
+      + `(${approvedCompanies.length} approved companies)...`,
+    );
+
+    const result = spawnSync(
+      "codex",
+      [
+        "--search",
+        "-C",
+        process.cwd(),
+        "exec",
+        "--sandbox",
+        "workspace-write",
+        "--ask-for-approval",
+        "never",
+        prompt,
+      ],
+      { stdio: "inherit" },
+    );
+
+    if (result.error) {
+      console.error(`Unable to start Codex: ${result.error.message}`);
+      process.exitCode = 1;
+    } else if (result.status !== 0) {
+      process.exitCode = result.status ?? 1;
+    }
+  }
+}
