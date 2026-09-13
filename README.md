@@ -46,8 +46,14 @@ npm run companies:list
 npm run companies:list -- 1
 npm run companies:approve -- 3 6 8 9
 npm run companies:reject -- 4 7
+npm run contacts:discover -- 1
 ```
 
 The optional argument to `companies:list` is a campaign ID. Company review
 commands are atomic: if one ID is invalid, no company in that invocation is
 changed.
+
+`contacts:discover` validates that the campaign exists and has approved
+companies, then runs the installed Codex CLI with live web search and the
+instructions in `prompts/contact-discovery.md`. It writes verified contacts to
+SQLite but does not research email addresses or create outreach.
