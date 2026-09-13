@@ -18,92 +18,93 @@ describe("OutboundStore", () => {
   afterEach(() => db.close());
 
   function campaignAndCompany() {
-    const campaign = store.createCampaign({
-      name: "Initial ICP", productName: "ConvoKit", icp: "20-200 employee SaaS",
-    });
+    const campaign = store.createCampaign({ name: "Initial ICP", segment: "20-200 employee SaaS" });
     const company = store.createCompany({
-      campaignId: campaign.id, name: "Example Co", website: "https://example.com",
-      sourceUrls: ["https://example.com/about"],
+      campaignId: campaign.id,
+      name: "Example Co",
+      domain: "example.com",
+      location: "Canada",
+      employeeCount: 80,
+      score: 75,
+      reason: "Has user-to-user collaboration",
     });
     return { campaign, company };
   }
 
-  it("persists campaigns and companies with pending human review", () => {
+  it("uses numeric IDs and explicit initial statuses", () => {
     const { campaign, company } = campaignAndCompany();
-    assert.equal(store.getCampaign(campaign.id)?.productName, "ConvoKit");
-    assert.equal(company.approvalStatus, "pending");
-    assert.deepEqual(store.getCompany(company.id)?.sourceUrls, ["https://example.com/about"]);
+    assert.equal(campaign.id, 1);
+    assert.equal(campaign.status, "DRAFT");
+    assert.equal(company.id, 1);
+    assert.equal(company.status, "DISCOVERED");
   });
 
-  it("persists records after the database is reopened", () => {
+  it("persists records after reopening the SQLite file", () => {
     const directory = mkdtempSync(join(tmpdir(), "outbound-store-"));
     const filename = join(directory, "outbound.sqlite");
     const diskDb = openDatabase(filename);
-    const diskStore = new OutboundStore(diskDb);
-    const campaign = diskStore.createCampaign({ name: "Disk campaign", productName: "ConvoKit", icp: "Canada" });
+    const campaign = new OutboundStore(diskDb).createCampaign({ name: "Disk campaign", segment: "Canada" });
     diskDb.close();
-
     const reopenedDb = openDatabase(filename);
     assert.equal(new OutboundStore(reopenedDb).getCampaign(campaign.id)?.name, "Disk campaign");
-    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 1);
+    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 2);
     reopenedDb.close();
     rmSync(directory, { recursive: true });
   });
 
-  it("only permits contacts after company approval", () => {
+  it("approves multiple companies atomically", () => {
+    const { campaign, company } = campaignAndCompany();
+    const second = store.createCompany({ campaignId: campaign.id, name: "Second", domain: "second.test" });
+    const approved = store.reviewCompanies([company.id, second.id], "APPROVED");
+    assert.deepEqual(approved.map(({ status }) => status), ["APPROVED", "APPROVED"]);
+
+    assert.throws(() => store.reviewCompanies([company.id, 999], "REJECTED"), /Company not found/);
+    assert.equal(store.getCompany(company.id)?.status, "APPROVED");
+  });
+
+  it("only allows contacts for approved companies and never assumes email addresses", () => {
     const { company } = campaignAndCompany();
-    assert.throws(
-      () => store.createContact({ companyId: company.id, fullName: "Pat Lee" }),
-      /approved companies/,
-    );
-    store.reviewCompany(company.id, "approved");
-    const contact = store.createContact({ companyId: company.id, fullName: "Pat Lee", emailStatus: "not_found" });
+    assert.throws(() => store.createContact({ companyId: company.id, name: "Pat Lee" }), /APPROVED companies/);
+    store.reviewCompany(company.id, "APPROVED");
+    const contact = store.createContact({ companyId: company.id, name: "Pat Lee", emailStatus: "EMAIL_NOT_FOUND" });
     assert.equal(contact.email, null);
-    assert.equal(contact.approvalStatus, "pending");
+    assert.equal(contact.status, "DISCOVERED");
+    assert.throws(
+      () => store.createContact({ companyId: company.id, name: "Alex", emailStatus: "VERIFIED" }),
+      /CHECK constraint failed/,
+    );
   });
 
-  it("requires company/contact approval and explicit outreach approval before sending", () => {
-    const { campaign, company } = campaignAndCompany();
-    store.reviewCompany(company.id, "approved");
-    const contact = store.createContact({ companyId: company.id, fullName: "Sam Kim" });
-    const input = {
-      campaignId: campaign.id, companyId: company.id, contactId: contact.id,
-      kind: "first_touch" as const, sequenceNumber: 0, subject: "Chat infrastructure",
-      body: "A short draft", reason: "Verified collaborative product signal",
-    };
-    assert.throws(() => store.createOutreach(input), /approved company and contact/);
-
-    store.reviewContact(contact.id, "approved");
-    const outreach = store.createOutreach(input);
-    assert.throws(() => store.markOutreachSent(outreach.id), /explicit approval/);
-    store.submitOutreachForApproval(outreach.id);
-    const approved = store.reviewOutreach(outreach.id, "approved");
-    assert.ok(approved.approvedAt);
-    assert.equal(store.markOutreachSent(outreach.id, "message-1").status, "sent");
-  });
-
-  it("limits active outreach to two contacts at a company", () => {
-    const { campaign, company } = campaignAndCompany();
-    store.reviewCompany(company.id, "approved");
-    const outreachIds = ["One", "Two", "Three"].map((name) => {
-      const contact = store.createContact({ companyId: company.id, fullName: name });
-      store.reviewContact(contact.id, "approved");
-      return store.createOutreach({
-        campaignId: campaign.id, companyId: company.id, contactId: contact.id,
-        kind: "first_touch", sequenceNumber: 0, subject: "Subject", body: "Body",
-        reason: "Company-specific reason",
-      }).id;
-    });
-    store.submitOutreachForApproval(outreachIds[0]);
-    store.submitOutreachForApproval(outreachIds[1]);
-    assert.throws(() => store.submitOutreachForApproval(outreachIds[2]), /No more than two contacts/);
-  });
-
-  it("rejects a verified email without an address", () => {
+  it("enforces the outreach approval state machine", () => {
     const { company } = campaignAndCompany();
-    store.reviewCompany(company.id, "approved");
-    assert.throws(() => store.createContact({
-      companyId: company.id, fullName: "Alex Chen", emailStatus: "verified",
-    }), /CHECK constraint failed/);
+    store.reviewCompany(company.id, "APPROVED");
+    const contact = store.createContact({ companyId: company.id, name: "Sam Kim" });
+    assert.throws(() => store.createOutreach({ contactId: contact.id, subject: "Subject", body: "Body" }), /APPROVED company and contact/);
+    store.reviewContact(contact.id, "APPROVED");
+
+    const outreach = store.createOutreach({ contactId: contact.id, subject: "Subject", body: "Body" });
+    assert.equal(outreach.status, "DRAFT");
+    assert.throws(() => store.markOutreachSent(outreach.id), /READY_TO_SEND/);
+    store.approveOutreach(outreach.id);
+    store.markOutreachReady(outreach.id);
+    const sent = store.markOutreachSent(outreach.id, "gmail-thread-1");
+    assert.equal(sent.status, "SENT");
+    assert.ok(sent.sentAt);
+    assert.equal(store.markOutreachReplied(outreach.id).status, "REPLIED");
+  });
+
+  it("limits active outreach to two contacts per company", () => {
+    const { company } = campaignAndCompany();
+    store.reviewCompany(company.id, "APPROVED");
+    const outreachIds = ["One", "Two", "Three"].map((name) => {
+      const contact = store.createContact({ companyId: company.id, name });
+      store.reviewContact(contact.id, "APPROVED");
+      const outreach = store.createOutreach({ contactId: contact.id, subject: "Subject", body: "Body" });
+      store.approveOutreach(outreach.id);
+      return outreach.id;
+    });
+    store.markOutreachReady(outreachIds[0]);
+    store.markOutreachReady(outreachIds[1]);
+    assert.throws(() => store.markOutreachReady(outreachIds[2]), /No more than two contacts/);
   });
 });

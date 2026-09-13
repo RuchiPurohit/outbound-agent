@@ -27,11 +27,27 @@ const store = new OutboundStore(db);
 
 const campaign = store.createCampaign({
   name: "Initial ICP",
-  productName: "ConvoKit",
-  icp: "US/Canada software companies with 20-200 employees",
+  segment: "US/Canada software companies with 20-200 employees",
 });
 
 db.close();
 ```
 
 Run `npm test` to build and exercise the schema and workflow safeguards.
+
+## Commands
+
+All commands use the same `data/outbound.sqlite` file:
+
+```sh
+npm run campaign:create -- "Initial ICP" "US/Canada software companies with 20-200 employees"
+npm run campaign:list
+npm run companies:list
+npm run companies:list -- 1
+npm run companies:approve -- 3 6 8 9
+npm run companies:reject -- 4 7
+```
+
+The optional argument to `companies:list` is a campaign ID. Company review
+commands are atomic: if one ID is invalid, no company in that invocation is
+changed.

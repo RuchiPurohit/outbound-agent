@@ -1,76 +1,57 @@
-export type CampaignStatus = "draft" | "active" | "paused" | "completed";
-export type ApprovalStatus = "pending" | "approved" | "rejected";
-export type EmailStatus = "unknown" | "verified" | "not_found";
-export type OutreachKind = "first_touch" | "follow_up";
-export type OutreachStatus =
-  | "draft"
-  | "pending_approval"
-  | "approved"
-  | "rejected"
-  | "sent"
-  | "failed"
-  | "replied"
-  | "completed"
-  | "cancelled";
+export type CampaignStatus = "DRAFT" | "ACTIVE" | "PAUSED" | "COMPLETED";
+export type ReviewStatus = "DISCOVERED" | "APPROVED" | "REJECTED";
+export type EmailStatus = "UNKNOWN" | "VERIFIED" | "EMAIL_NOT_FOUND";
+export type OutreachStatus = "DRAFT" | "APPROVED" | "READY_TO_SEND" | "SENT" | "REPLIED";
 
 export interface Campaign {
-  id: string;
+  id: number;
   name: string;
-  productName: string;
-  icp: string;
-  status: CampaignStatus;
+  segment: string;
   createdAt: string;
-  updatedAt: string;
+  status: CampaignStatus;
 }
 
 export interface Company {
-  id: string;
-  campaignId: string;
+  id: number;
+  campaignId: number;
   name: string;
-  website: string;
-  geography: string | null;
-  employeeCountMin: number | null;
-  employeeCountMax: number | null;
-  fitScore: number | null;
-  fitRationale: string | null;
-  sourceUrls: string[];
-  approvalStatus: ApprovalStatus;
-  reviewedAt: string | null;
+  domain: string;
+  location: string | null;
+  employeeCount: number | null;
+  score: number | null;
+  reason: string | null;
+  status: ReviewStatus;
   createdAt: string;
-  updatedAt: string;
 }
 
 export interface Contact {
-  id: string;
-  companyId: string;
-  fullName: string;
-  jobTitle: string | null;
-  rolePriority: number | null;
-  profileUrl: string | null;
+  id: number;
+  companyId: number;
+  name: string;
+  title: string | null;
+  roleCategory: string | null;
+  roleScore: number | null;
+  linkedinUrl: string | null;
   email: string | null;
   emailStatus: EmailStatus;
-  sourceUrls: string[];
-  approvalStatus: ApprovalStatus;
-  reviewedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
+  status: ReviewStatus;
+}
+
+export interface ResearchRecord {
+  id: number;
+  companyId: number;
+  contactId: number | null;
+  signal: string;
+  sourceUrl: string;
+  notes: string | null;
 }
 
 export interface Outreach {
-  id: string;
-  campaignId: string;
-  companyId: string;
-  contactId: string;
-  kind: OutreachKind;
-  sequenceNumber: number;
+  id: number;
+  contactId: number;
   subject: string;
   body: string;
-  reason: string;
   status: OutreachStatus;
-  approvedAt: string | null;
   sentAt: string | null;
-  providerDraftId: string | null;
-  providerMessageId: string | null;
-  createdAt: string;
-  updatedAt: string;
+  gmailThreadId: string | null;
 }

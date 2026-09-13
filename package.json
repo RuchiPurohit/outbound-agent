@@ -5,6 +5,11 @@
   "main": "dist/src/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "campaign:create": "npm run build --silent && node dist/src/commands/createCampaign.js",
+    "campaign:list": "npm run build --silent && node dist/src/commands/listCampaigns.js",
+    "companies:list": "npm run build --silent && node dist/src/commands/listCompanies.js",
+    "companies:approve": "npm run build --silent && node dist/src/commands/approveCompanies.js",
+    "companies:reject": "npm run build --silent && node dist/src/commands/rejectCompanies.js",
     "test": "npm run build && node --test dist/test",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

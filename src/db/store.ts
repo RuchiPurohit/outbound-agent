@@ -1,8 +1,6 @@
-import { randomUUID } from "node:crypto";
 import type { SqliteDatabase } from "./database.js";
 import type {
-  ApprovalStatus, Campaign, CampaignStatus, Company, Contact, EmailStatus,
-  Outreach, OutreachKind,
+  Campaign, CampaignStatus, Company, Contact, EmailStatus, Outreach, ReviewStatus,
 } from "./types.js";
 
 type Row = Record<string, unknown>;
@@ -13,253 +11,260 @@ export class WorkflowError extends Error {}
 export class OutboundStore {
   public constructor(private readonly db: SqliteDatabase) {}
 
-  createCampaign(input: { name: string; productName: string; icp: string; status?: CampaignStatus }): Campaign {
-    const timestamp = now();
-    const id = randomUUID();
-    this.db.prepare(`
-      INSERT INTO campaigns (id, name, product_name, icp, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, input.name, input.productName, input.icp, input.status ?? "draft", timestamp, timestamp);
-    return this.getCampaign(id)!;
+  createCampaign(input: { name: string; segment: string; status?: CampaignStatus }): Campaign {
+    const result = this.db.prepare(`
+      INSERT INTO campaigns (name, segment, created_at, status) VALUES (?, ?, ?, ?)
+    `).run(input.name, input.segment, now(), input.status ?? "DRAFT");
+    return this.getCampaign(Number(result.lastInsertRowid))!;
   }
 
-  getCampaign(id: string): Campaign | undefined {
+  getCampaign(id: number): Campaign | undefined {
     const row = this.db.prepare("SELECT * FROM campaigns WHERE id = ?").get(id) as Row | undefined;
     return row ? campaignFromRow(row) : undefined;
   }
 
   listCampaigns(): Campaign[] {
-    return (this.db.prepare("SELECT * FROM campaigns ORDER BY created_at, id").all() as Row[]).map(campaignFromRow);
+    return (this.db.prepare("SELECT * FROM campaigns ORDER BY id").all() as Row[]).map(campaignFromRow);
   }
 
-  setCampaignStatus(id: string, status: CampaignStatus): Campaign {
+  setCampaignStatus(id: number, status: CampaignStatus): Campaign {
     this.requireCampaign(id);
-    this.db.prepare("UPDATE campaigns SET status = ?, updated_at = ? WHERE id = ?").run(status, now(), id);
+    this.db.prepare("UPDATE campaigns SET status = ? WHERE id = ?").run(status, id);
     return this.getCampaign(id)!;
   }
 
   createCompany(input: {
-    campaignId: string; name: string; website: string; geography?: string;
-    employeeCountMin?: number; employeeCountMax?: number; fitScore?: number;
-    fitRationale?: string; sourceUrls?: string[];
+    campaignId: number;
+    name: string;
+    domain: string;
+    location?: string;
+    employeeCount?: number;
+    score?: number;
+    reason?: string;
   }): Company {
     this.requireCampaign(input.campaignId);
-    const timestamp = now();
-    const id = randomUUID();
-    this.db.prepare(`
+    const result = this.db.prepare(`
       INSERT INTO companies (
-        id, campaign_id, name, website, geography, employee_count_min,
-        employee_count_max, fit_score, fit_rationale, source_urls,
-        approval_status, reviewed_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
+        campaign_id, name, domain, location, employee_count, score, reason, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'DISCOVERED', ?)
     `).run(
-      id, input.campaignId, input.name, input.website, input.geography ?? null,
-      input.employeeCountMin ?? null, input.employeeCountMax ?? null,
-      input.fitScore ?? null, input.fitRationale ?? null,
-      JSON.stringify(input.sourceUrls ?? []), timestamp, timestamp,
+      input.campaignId, input.name, input.domain, input.location ?? null,
+      input.employeeCount ?? null, input.score ?? null, input.reason ?? null, now(),
     );
-    return this.getCompany(id)!;
+    return this.getCompany(Number(result.lastInsertRowid))!;
   }
 
-  getCompany(id: string): Company | undefined {
+  getCompany(id: number): Company | undefined {
     const row = this.db.prepare("SELECT * FROM companies WHERE id = ?").get(id) as Row | undefined;
     return row ? companyFromRow(row) : undefined;
   }
 
-  listCompanies(campaignId: string, approvalStatus?: ApprovalStatus): Company[] {
-    this.requireCampaign(campaignId);
-    const rows = approvalStatus
-      ? this.db.prepare("SELECT * FROM companies WHERE campaign_id = ? AND approval_status = ? ORDER BY created_at, id").all(campaignId, approvalStatus)
-      : this.db.prepare("SELECT * FROM companies WHERE campaign_id = ? ORDER BY created_at, id").all(campaignId);
-    return (rows as Row[]).map(companyFromRow);
+  listCompanies(filters: { campaignId?: number; status?: ReviewStatus } = {}): Company[] {
+    const clauses: string[] = [];
+    const values: Array<number | string> = [];
+    if (filters.campaignId !== undefined) {
+      clauses.push("campaign_id = ?");
+      values.push(filters.campaignId);
+    }
+    if (filters.status !== undefined) {
+      clauses.push("status = ?");
+      values.push(filters.status);
+    }
+    const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+    return (this.db.prepare(`SELECT * FROM companies${where} ORDER BY id`).all(...values) as Row[])
+      .map(companyFromRow);
   }
 
-  reviewCompany(id: string, decision: Exclude<ApprovalStatus, "pending">): Company {
-    this.requireCompany(id);
-    const timestamp = now();
-    this.db.prepare("UPDATE companies SET approval_status = ?, reviewed_at = ?, updated_at = ? WHERE id = ?")
-      .run(decision, timestamp, timestamp, id);
-    return this.getCompany(id)!;
+  reviewCompanies(ids: number[], decision: Exclude<ReviewStatus, "DISCOVERED">): Company[] {
+    if (ids.length === 0) throw new WorkflowError("At least one company ID is required");
+    return this.db.transaction(() => ids.map((id) => {
+      this.requireCompany(id);
+      this.db.prepare("UPDATE companies SET status = ? WHERE id = ?").run(decision, id);
+      return this.getCompany(id)!;
+    }))();
+  }
+
+  reviewCompany(id: number, decision: Exclude<ReviewStatus, "DISCOVERED">): Company {
+    return this.reviewCompanies([id], decision)[0];
   }
 
   createContact(input: {
-    companyId: string; fullName: string; jobTitle?: string; rolePriority?: number;
-    profileUrl?: string; email?: string; emailStatus?: EmailStatus; sourceUrls?: string[];
+    companyId: number;
+    name: string;
+    title?: string;
+    roleCategory?: string;
+    roleScore?: number;
+    linkedinUrl?: string;
+    email?: string;
+    emailStatus?: EmailStatus;
   }): Contact {
     const company = this.requireCompany(input.companyId);
-    if (company.approvalStatus !== "approved") {
-      throw new WorkflowError("Contacts may only be added to approved companies");
+    if (company.status !== "APPROVED") {
+      throw new WorkflowError("Contacts may only be added to APPROVED companies");
     }
-    const timestamp = now();
-    const id = randomUUID();
-    this.db.prepare(`
+    const result = this.db.prepare(`
       INSERT INTO contacts (
-        id, company_id, full_name, job_title, role_priority, profile_url,
-        email, email_status, source_urls, approval_status, reviewed_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
+        company_id, name, title, role_category, role_score, linkedin_url,
+        email, email_status, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'DISCOVERED')
     `).run(
-      id, input.companyId, input.fullName, input.jobTitle ?? null,
-      input.rolePriority ?? null, input.profileUrl ?? null, input.email ?? null,
-      input.emailStatus ?? "unknown", JSON.stringify(input.sourceUrls ?? []), timestamp, timestamp,
+      input.companyId, input.name, input.title ?? null, input.roleCategory ?? null,
+      input.roleScore ?? null, input.linkedinUrl ?? null, input.email ?? null,
+      input.emailStatus ?? "UNKNOWN",
     );
-    return this.getContact(id)!;
+    return this.getContact(Number(result.lastInsertRowid))!;
   }
 
-  getContact(id: string): Contact | undefined {
+  getContact(id: number): Contact | undefined {
     const row = this.db.prepare("SELECT * FROM contacts WHERE id = ?").get(id) as Row | undefined;
     return row ? contactFromRow(row) : undefined;
   }
 
-  listContacts(companyId: string, approvalStatus?: ApprovalStatus): Contact[] {
-    this.requireCompany(companyId);
-    const rows = approvalStatus
-      ? this.db.prepare("SELECT * FROM contacts WHERE company_id = ? AND approval_status = ? ORDER BY created_at, id").all(companyId, approvalStatus)
-      : this.db.prepare("SELECT * FROM contacts WHERE company_id = ? ORDER BY created_at, id").all(companyId);
+  listContacts(companyId?: number): Contact[] {
+    const rows = companyId === undefined
+      ? this.db.prepare("SELECT * FROM contacts ORDER BY id").all()
+      : this.db.prepare("SELECT * FROM contacts WHERE company_id = ? ORDER BY id").all(companyId);
     return (rows as Row[]).map(contactFromRow);
   }
 
-  reviewContact(id: string, decision: Exclude<ApprovalStatus, "pending">): Contact {
+  reviewContact(id: number, decision: Exclude<ReviewStatus, "DISCOVERED">): Contact {
     this.requireContact(id);
-    const timestamp = now();
-    this.db.prepare("UPDATE contacts SET approval_status = ?, reviewed_at = ?, updated_at = ? WHERE id = ?")
-      .run(decision, timestamp, timestamp, id);
+    this.db.prepare("UPDATE contacts SET status = ? WHERE id = ?").run(decision, id);
     return this.getContact(id)!;
   }
 
-  createOutreach(input: {
-    campaignId: string; companyId: string; contactId: string; kind: OutreachKind;
-    sequenceNumber: number; subject: string; body: string; reason: string;
-  }): Outreach {
-    const company = this.requireCompany(input.companyId);
+  createOutreach(input: { contactId: number; subject: string; body: string }): Outreach {
     const contact = this.requireContact(input.contactId);
-    if (company.campaignId !== input.campaignId || contact.companyId !== input.companyId) {
-      throw new WorkflowError("Campaign, company, and contact do not belong to the same workflow");
+    const company = this.requireCompany(contact.companyId);
+    if (company.status !== "APPROVED" || contact.status !== "APPROVED") {
+      throw new WorkflowError("Outreach requires an APPROVED company and contact");
     }
-    if (company.approvalStatus !== "approved" || contact.approvalStatus !== "approved") {
-      throw new WorkflowError("Outreach requires an approved company and contact");
-    }
-    const timestamp = now();
-    const id = randomUUID();
-    this.db.prepare(`
-      INSERT INTO outreach (
-        id, campaign_id, company_id, contact_id, kind, sequence_number,
-        subject, body, reason, status, approved_at, sent_at,
-        provider_draft_id, provider_message_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', NULL, NULL, NULL, NULL, ?, ?)
-    `).run(
-      id, input.campaignId, input.companyId, input.contactId, input.kind,
-      input.sequenceNumber, input.subject, input.body, input.reason, timestamp, timestamp,
-    );
-    return this.getOutreach(id)!;
+    const result = this.db.prepare(`
+      INSERT INTO outreach (contact_id, subject, body, status, sent_at, gmail_thread_id)
+      VALUES (?, ?, ?, 'DRAFT', NULL, NULL)
+    `).run(input.contactId, input.subject, input.body);
+    return this.getOutreach(Number(result.lastInsertRowid))!;
   }
 
-  getOutreach(id: string): Outreach | undefined {
+  getOutreach(id: number): Outreach | undefined {
     const row = this.db.prepare("SELECT * FROM outreach WHERE id = ?").get(id) as Row | undefined;
     return row ? outreachFromRow(row) : undefined;
   }
 
-  listOutreach(campaignId: string): Outreach[] {
-    this.requireCampaign(campaignId);
-    return (this.db.prepare("SELECT * FROM outreach WHERE campaign_id = ? ORDER BY created_at, id")
-      .all(campaignId) as Row[]).map(outreachFromRow);
+  listOutreach(contactId?: number): Outreach[] {
+    const rows = contactId === undefined
+      ? this.db.prepare("SELECT * FROM outreach ORDER BY id").all()
+      : this.db.prepare("SELECT * FROM outreach WHERE contact_id = ? ORDER BY id").all(contactId);
+    return (rows as Row[]).map(outreachFromRow);
   }
 
-  submitOutreachForApproval(id: string): Outreach {
+  approveOutreach(id: number): Outreach {
+    return this.transitionOutreach(id, "DRAFT", "APPROVED");
+  }
+
+  markOutreachReady(id: number): Outreach {
     return this.db.transaction(() => {
       const outreach = this.requireOutreach(id);
-      if (outreach.status !== "draft") throw new WorkflowError("Only draft outreach can be submitted for approval");
-      this.assertContactLimit(outreach.companyId, outreach.contactId);
-      this.db.prepare("UPDATE outreach SET status = 'pending_approval', updated_at = ? WHERE id = ?").run(now(), id);
+      if (outreach.status !== "APPROVED") {
+        throw new WorkflowError("Only APPROVED outreach can become READY_TO_SEND");
+      }
+      this.requireCurrentApprovals(outreach.contactId);
+      this.assertContactLimit(outreach.contactId);
+      this.db.prepare("UPDATE outreach SET status = 'READY_TO_SEND' WHERE id = ?").run(id);
       return this.getOutreach(id)!;
     })();
   }
 
-  reviewOutreach(id: string, decision: "approved" | "rejected"): Outreach {
+  markOutreachSent(id: number, gmailThreadId?: string): Outreach {
     const outreach = this.requireOutreach(id);
-    if (outreach.status !== "pending_approval") throw new WorkflowError("Only pending outreach can be reviewed");
-    const timestamp = now();
-    this.db.prepare("UPDATE outreach SET status = ?, approved_at = ?, updated_at = ? WHERE id = ?")
-      .run(decision, decision === "approved" ? timestamp : null, timestamp, id);
-    return this.getOutreach(id)!;
-  }
-
-  markOutreachSent(id: string, providerMessageId?: string): Outreach {
-    const outreach = this.requireOutreach(id);
-    if (outreach.status !== "approved" || !outreach.approvedAt) {
-      throw new WorkflowError("Outreach must receive explicit approval before it is sent");
+    if (outreach.status !== "READY_TO_SEND") {
+      throw new WorkflowError("Only READY_TO_SEND outreach can be marked SENT");
     }
-    const timestamp = now();
+    this.requireCurrentApprovals(outreach.contactId);
     this.db.prepare(`
-      UPDATE outreach SET status = 'sent', sent_at = ?, provider_message_id = ?, updated_at = ? WHERE id = ?
-    `).run(timestamp, providerMessageId ?? null, timestamp, id);
+      UPDATE outreach SET status = 'SENT', sent_at = ?, gmail_thread_id = ? WHERE id = ?
+    `).run(now(), gmailThreadId ?? null, id);
     return this.getOutreach(id)!;
   }
 
-  private assertContactLimit(companyId: string, contactId: string): void {
+  markOutreachReplied(id: number): Outreach {
+    return this.transitionOutreach(id, "SENT", "REPLIED");
+  }
+
+  private transitionOutreach(id: number, from: Outreach["status"], to: Outreach["status"]): Outreach {
+    const outreach = this.requireOutreach(id);
+    if (outreach.status !== from) throw new WorkflowError(`Only ${from} outreach can become ${to}`);
+    this.db.prepare("UPDATE outreach SET status = ? WHERE id = ?").run(to, id);
+    return this.getOutreach(id)!;
+  }
+
+  private assertContactLimit(contactId: number): void {
+    const contact = this.requireContact(contactId);
     const row = this.db.prepare(`
-      SELECT COUNT(DISTINCT contact_id) AS count FROM outreach
-      WHERE company_id = ? AND contact_id != ?
-        AND status IN ('pending_approval', 'approved', 'sent')
-    `).get(companyId, contactId) as { count: number };
+      SELECT COUNT(DISTINCT o.contact_id) AS count
+      FROM outreach o
+      JOIN contacts c ON c.id = o.contact_id
+      WHERE c.company_id = ? AND o.contact_id != ?
+        AND o.status IN ('READY_TO_SEND', 'SENT')
+    `).get(contact.companyId, contactId) as { count: number };
     if (row.count >= 2) throw new WorkflowError("No more than two contacts per company may have active outreach");
   }
 
-  private requireCampaign(id: string): Campaign {
+  private requireCurrentApprovals(contactId: number): void {
+    const contact = this.requireContact(contactId);
+    const company = this.requireCompany(contact.companyId);
+    if (company.status !== "APPROVED" || contact.status !== "APPROVED") {
+      throw new WorkflowError("Sending requires a currently APPROVED company and contact");
+    }
+  }
+
+  private requireCampaign(id: number): Campaign {
     const value = this.getCampaign(id);
     if (!value) throw new WorkflowError(`Campaign not found: ${id}`);
     return value;
   }
-  private requireCompany(id: string): Company {
+  private requireCompany(id: number): Company {
     const value = this.getCompany(id);
     if (!value) throw new WorkflowError(`Company not found: ${id}`);
     return value;
   }
-  private requireContact(id: string): Contact {
+  private requireContact(id: number): Contact {
     const value = this.getContact(id);
     if (!value) throw new WorkflowError(`Contact not found: ${id}`);
     return value;
   }
-  private requireOutreach(id: string): Outreach {
+  private requireOutreach(id: number): Outreach {
     const value = this.getOutreach(id);
     if (!value) throw new WorkflowError(`Outreach not found: ${id}`);
     return value;
   }
 }
 
-const str = (row: Row, key: string): string => row[key] as string;
-const nullableStr = (row: Row, key: string): string | null => row[key] as string | null;
-const nullableNumber = (row: Row, key: string): number | null => row[key] as number | null;
+const text = (row: Row, key: string): string => row[key] as string;
+const integer = (row: Row, key: string): number => row[key] as number;
+const nullableText = (row: Row, key: string): string | null => row[key] as string | null;
+const nullableInteger = (row: Row, key: string): number | null => row[key] as number | null;
 
 function campaignFromRow(row: Row): Campaign {
-  return { id: str(row, "id"), name: str(row, "name"), productName: str(row, "product_name"),
-    icp: str(row, "icp"), status: str(row, "status") as CampaignStatus,
-    createdAt: str(row, "created_at"), updatedAt: str(row, "updated_at") };
+  return { id: integer(row, "id"), name: text(row, "name"), segment: text(row, "segment"),
+    createdAt: text(row, "created_at"), status: text(row, "status") as Campaign["status"] };
 }
-
 function companyFromRow(row: Row): Company {
-  return { id: str(row, "id"), campaignId: str(row, "campaign_id"), name: str(row, "name"),
-    website: str(row, "website"), geography: nullableStr(row, "geography"),
-    employeeCountMin: nullableNumber(row, "employee_count_min"), employeeCountMax: nullableNumber(row, "employee_count_max"),
-    fitScore: nullableNumber(row, "fit_score"), fitRationale: nullableStr(row, "fit_rationale"),
-    sourceUrls: JSON.parse(str(row, "source_urls")) as string[], approvalStatus: str(row, "approval_status") as ApprovalStatus,
-    reviewedAt: nullableStr(row, "reviewed_at"), createdAt: str(row, "created_at"), updatedAt: str(row, "updated_at") };
+  return { id: integer(row, "id"), campaignId: integer(row, "campaign_id"), name: text(row, "name"),
+    domain: text(row, "domain"), location: nullableText(row, "location"),
+    employeeCount: nullableInteger(row, "employee_count"), score: nullableInteger(row, "score"),
+    reason: nullableText(row, "reason"), status: text(row, "status") as Company["status"],
+    createdAt: text(row, "created_at") };
 }
-
 function contactFromRow(row: Row): Contact {
-  return { id: str(row, "id"), companyId: str(row, "company_id"), fullName: str(row, "full_name"),
-    jobTitle: nullableStr(row, "job_title"), rolePriority: nullableNumber(row, "role_priority"),
-    profileUrl: nullableStr(row, "profile_url"), email: nullableStr(row, "email"),
-    emailStatus: str(row, "email_status") as EmailStatus, sourceUrls: JSON.parse(str(row, "source_urls")) as string[],
-    approvalStatus: str(row, "approval_status") as ApprovalStatus, reviewedAt: nullableStr(row, "reviewed_at"),
-    createdAt: str(row, "created_at"), updatedAt: str(row, "updated_at") };
+  return { id: integer(row, "id"), companyId: integer(row, "company_id"), name: text(row, "name"),
+    title: nullableText(row, "title"), roleCategory: nullableText(row, "role_category"),
+    roleScore: nullableInteger(row, "role_score"), linkedinUrl: nullableText(row, "linkedin_url"),
+    email: nullableText(row, "email"), emailStatus: text(row, "email_status") as Contact["emailStatus"],
+    status: text(row, "status") as Contact["status"] };
 }
-
 function outreachFromRow(row: Row): Outreach {
-  return { id: str(row, "id"), campaignId: str(row, "campaign_id"), companyId: str(row, "company_id"),
-    contactId: str(row, "contact_id"), kind: str(row, "kind") as OutreachKind,
-    sequenceNumber: row.sequence_number as number, subject: str(row, "subject"), body: str(row, "body"),
-    reason: str(row, "reason"), status: str(row, "status") as Outreach["status"],
-    approvedAt: nullableStr(row, "approved_at"), sentAt: nullableStr(row, "sent_at"),
-    providerDraftId: nullableStr(row, "provider_draft_id"), providerMessageId: nullableStr(row, "provider_message_id"),
-    createdAt: str(row, "created_at"), updatedAt: str(row, "updated_at") };
+  return { id: integer(row, "id"), contactId: integer(row, "contact_id"), subject: text(row, "subject"),
+    body: text(row, "body"), status: text(row, "status") as Outreach["status"],
+    sentAt: nullableText(row, "sent_at"), gmailThreadId: nullableText(row, "gmail_thread_id") };
 }
