@@ -1,6 +1,7 @@
 import type { SqliteDatabase } from "./database.js";
 import type {
-  Campaign, CampaignStatus, Company, Contact, EmailStatus, Outreach, ReviewStatus,
+  Campaign, CampaignStatus, Company, Contact, EmailStatus, Outreach, ResearchRecord,
+  ReviewStatus,
 } from "./types.js";
 
 type Row = Record<string, unknown>;
@@ -86,6 +87,41 @@ export class OutboundStore {
 
   reviewCompany(id: number, decision: Exclude<ReviewStatus, "DISCOVERED">): Company {
     return this.reviewCompanies([id], decision)[0];
+  }
+
+  createResearchRecord(input: {
+    companyId: number;
+    contactId?: number;
+    signal: string;
+    sourceUrl: string;
+    notes?: string;
+  }): ResearchRecord {
+    this.requireCompany(input.companyId);
+    if (input.contactId !== undefined) {
+      const contact = this.requireContact(input.contactId);
+      if (contact.companyId !== input.companyId) {
+        throw new WorkflowError("Research contact does not belong to the company");
+      }
+    }
+    const result = this.db.prepare(`
+      INSERT INTO research (company_id, contact_id, signal, source_url, notes)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      input.companyId, input.contactId ?? null, input.signal, input.sourceUrl,
+      input.notes ?? null,
+    );
+    return this.getResearchRecord(Number(result.lastInsertRowid))!;
+  }
+
+  getResearchRecord(id: number): ResearchRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM research WHERE id = ?").get(id) as Row | undefined;
+    return row ? researchFromRow(row) : undefined;
+  }
+
+  listResearch(companyId: number): ResearchRecord[] {
+    this.requireCompany(companyId);
+    return (this.db.prepare("SELECT * FROM research WHERE company_id = ? ORDER BY id")
+      .all(companyId) as Row[]).map(researchFromRow);
   }
 
   createContact(input: {
@@ -262,6 +298,11 @@ function contactFromRow(row: Row): Contact {
     roleScore: nullableInteger(row, "role_score"), linkedinUrl: nullableText(row, "linkedin_url"),
     email: nullableText(row, "email"), emailStatus: text(row, "email_status") as Contact["emailStatus"],
     status: text(row, "status") as Contact["status"] };
+}
+function researchFromRow(row: Row): ResearchRecord {
+  return { id: integer(row, "id"), companyId: integer(row, "company_id"),
+    contactId: nullableInteger(row, "contact_id"), signal: text(row, "signal"),
+    sourceUrl: text(row, "source_url"), notes: nullableText(row, "notes") };
 }
 function outreachFromRow(row: Row): Outreach {
   return { id: integer(row, "id"), contactId: integer(row, "contact_id"), subject: text(row, "subject"),
