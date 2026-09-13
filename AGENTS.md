@@ -146,3 +146,11 @@ Use TypeScript.
 Use SQLite for persistence.
 
 Explain important architectural decisions before implementing them.
+
+## Saved workflows
+
+When the user asks to "run contact discovery", read and execute
+`prompts/contact-discovery.md` against the live SQLite database. Use a campaign
+ID supplied by the user; otherwise use the most recently created campaign that
+has approved companies. Never run contact discovery for rejected or merely
+discovered companies.
