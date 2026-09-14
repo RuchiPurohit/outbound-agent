@@ -1,7 +1,7 @@
 import type { SqliteDatabase } from "./database.js";
 import type {
   Campaign, CampaignStatus, Company, Contact, EmailStatus, Outreach, ResearchRecord,
-  ReviewStatus,
+  ReviewStatus, WorkflowRun, WorkflowRunKind,
 } from "./types.js";
 
 type Row = Record<string, unknown>;
@@ -271,6 +271,82 @@ export class OutboundStore {
     return this.transitionOutreach(id, "SENT", "REPLIED");
   }
 
+  createWorkflowRun(input: {
+    campaignId: number;
+    kind: WorkflowRunKind;
+    details?: string;
+  }): WorkflowRun {
+    this.requireCampaign(input.campaignId);
+    const active = this.db.prepare(`
+      SELECT id FROM workflow_runs WHERE status IN ('PENDING', 'RUNNING') LIMIT 1
+    `).get() as { id: number } | undefined;
+    if (active) throw new WorkflowError(`Workflow run ${active.id} is already active`);
+
+    const result = this.db.prepare(`
+      INSERT INTO workflow_runs (
+        campaign_id, kind, status, details, output, error, requested_at, started_at, finished_at
+      ) VALUES (?, ?, 'PENDING', ?, '', NULL, ?, NULL, NULL)
+    `).run(input.campaignId, input.kind, input.details ?? null, now());
+    return this.getWorkflowRun(Number(result.lastInsertRowid))!;
+  }
+
+  getWorkflowRun(id: number): WorkflowRun | undefined {
+    const row = this.db.prepare("SELECT * FROM workflow_runs WHERE id = ?").get(id) as Row | undefined;
+    return row ? workflowRunFromRow(row) : undefined;
+  }
+
+  listWorkflowRuns(campaignId?: number): WorkflowRun[] {
+    const rows = campaignId === undefined
+      ? this.db.prepare("SELECT * FROM workflow_runs ORDER BY id DESC").all()
+      : this.db.prepare(`
+          SELECT * FROM workflow_runs WHERE campaign_id = ? ORDER BY id DESC
+        `).all(campaignId);
+    return (rows as Row[]).map(workflowRunFromRow);
+  }
+
+  startWorkflowRun(id: number): WorkflowRun {
+    const run = this.requireWorkflowRun(id);
+    if (run.status !== "PENDING") throw new WorkflowError("Only PENDING workflow runs can start");
+    this.db.prepare(`
+      UPDATE workflow_runs SET status = 'RUNNING', started_at = ? WHERE id = ?
+    `).run(now(), id);
+    return this.getWorkflowRun(id)!;
+  }
+
+  appendWorkflowOutput(id: number, output: string): void {
+    this.requireWorkflowRun(id);
+    this.db.prepare("UPDATE workflow_runs SET output = output || ? WHERE id = ?").run(output, id);
+  }
+
+  completeWorkflowRun(id: number): WorkflowRun {
+    const run = this.requireWorkflowRun(id);
+    if (run.status !== "RUNNING") throw new WorkflowError("Only RUNNING workflow runs can complete");
+    this.db.prepare(`
+      UPDATE workflow_runs SET status = 'COMPLETED', finished_at = ? WHERE id = ?
+    `).run(now(), id);
+    return this.getWorkflowRun(id)!;
+  }
+
+  failWorkflowRun(id: number, error: string): WorkflowRun {
+    const run = this.requireWorkflowRun(id);
+    if (run.status !== "PENDING" && run.status !== "RUNNING") {
+      throw new WorkflowError("Only active workflow runs can fail");
+    }
+    this.db.prepare(`
+      UPDATE workflow_runs SET status = 'FAILED', error = ?, finished_at = ? WHERE id = ?
+    `).run(error, now(), id);
+    return this.getWorkflowRun(id)!;
+  }
+
+  failInterruptedWorkflowRuns(): number {
+    const result = this.db.prepare(`
+      UPDATE workflow_runs
+      SET status = 'FAILED', error = 'Dashboard stopped before this run finished', finished_at = ?
+      WHERE status IN ('PENDING', 'RUNNING')
+    `).run(now());
+    return result.changes;
+  }
+
   private transitionOutreach(id: number, from: Outreach["status"], to: Outreach["status"]): Outreach {
     const outreach = this.requireOutreach(id);
     if (outreach.status !== from) throw new WorkflowError(`Only ${from} outreach can become ${to}`);
@@ -318,6 +394,11 @@ export class OutboundStore {
     if (!value) throw new WorkflowError(`Outreach not found: ${id}`);
     return value;
   }
+  private requireWorkflowRun(id: number): WorkflowRun {
+    const value = this.getWorkflowRun(id);
+    if (!value) throw new WorkflowError(`Workflow run not found: ${id}`);
+    return value;
+  }
 }
 
 const text = (row: Row, key: string): string => row[key] as string;
@@ -352,4 +433,14 @@ function outreachFromRow(row: Row): Outreach {
   return { id: integer(row, "id"), contactId: integer(row, "contact_id"), subject: text(row, "subject"),
     body: text(row, "body"), status: text(row, "status") as Outreach["status"],
     sentAt: nullableText(row, "sent_at"), gmailThreadId: nullableText(row, "gmail_thread_id") };
+}
+function workflowRunFromRow(row: Row): WorkflowRun {
+  return {
+    id: integer(row, "id"), campaignId: integer(row, "campaign_id"),
+    kind: text(row, "kind") as WorkflowRun["kind"],
+    status: text(row, "status") as WorkflowRun["status"],
+    details: nullableText(row, "details"), output: text(row, "output"),
+    error: nullableText(row, "error"), requestedAt: text(row, "requested_at"),
+    startedAt: nullableText(row, "started_at"), finishedAt: nullableText(row, "finished_at"),
+  };
 }
