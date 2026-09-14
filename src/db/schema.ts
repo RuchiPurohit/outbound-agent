@@ -183,4 +183,26 @@ export const migrations: readonly string[] = [
       SELECT RAISE(ABORT, 'invalid outreach status transition');
     END;
   `,
+  `
+    CREATE TABLE workflow_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL
+        CHECK (kind IN ('COMPANY_DISCOVERY', 'CONTACT_DISCOVERY', 'EMAIL_DISCOVERY')),
+      status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED')),
+      details TEXT,
+      output TEXT NOT NULL DEFAULT '',
+      error TEXT,
+      requested_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      CHECK (status != 'RUNNING' OR started_at IS NOT NULL),
+      CHECK (status NOT IN ('COMPLETED', 'FAILED') OR finished_at IS NOT NULL)
+    ) STRICT;
+
+    CREATE INDEX workflow_runs_campaign_requested_idx
+      ON workflow_runs(campaign_id, requested_at DESC);
+    CREATE INDEX workflow_runs_status_idx ON workflow_runs(status);
+  `,
 ];
