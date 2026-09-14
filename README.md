@@ -73,3 +73,21 @@ discovery explicitly:
 ```sh
 CODEX_CLI_PATH=/absolute/path/to/codex npm run contacts:discover -- 1
 ```
+
+## Local dashboard
+
+Start the campaign control center:
+
+```sh
+npm run dashboard
+```
+
+Then open [http://127.0.0.1:3000](http://127.0.0.1:3000). From the dashboard
+you can create a campaign, launch company/contact/email discovery, inspect
+Codex run output, and approve or reject companies and contacts. Research runs
+in the background and the page refreshes while a run is active. There is no
+chat interface and the dashboard does not call the OpenAI API directly; it uses
+the installed Codex CLI and the same local SQLite database as the CLI commands.
+
+Set `OUTBOUND_PORT` to use a different port or `OUTBOUND_DB_PATH` to use a
+different SQLite file.
