@@ -7,3 +7,6 @@ data/*.sqlite-wal
 data/campaign-1-companies.md
 data/campaign-1-contacts.md
 data/campaign-1-emails.md
+data/campaign-2-companies.md
+data/campaign-2-contacts.md
+data/campaign-2-emails.md
