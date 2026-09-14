@@ -47,7 +47,7 @@ describe("OutboundStore", () => {
     diskDb.close();
     const reopenedDb = openDatabase(filename);
     assert.equal(new OutboundStore(reopenedDb).getCampaign(campaign.id)?.name, "Disk campaign");
-    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 3);
+    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 4);
     reopenedDb.close();
     rmSync(directory, { recursive: true });
   });
@@ -164,5 +164,25 @@ describe("OutboundStore", () => {
     store.markOutreachReady(outreachIds[0]);
     store.markOutreachReady(outreachIds[1]);
     assert.throws(() => store.markOutreachReady(outreachIds[2]), /No more than two contacts/);
+  });
+
+  it("persists background workflow runs and their output", () => {
+    const { campaign } = campaignAndCompany();
+    const run = store.createWorkflowRun({
+      campaignId: campaign.id,
+      kind: "COMPANY_DISCOVERY",
+      details: JSON.stringify({ targetCount: 5 }),
+    });
+    assert.equal(run.status, "PENDING");
+    assert.throws(
+      () => store.createWorkflowRun({ campaignId: campaign.id, kind: "CONTACT_DISCOVERY" }),
+      /already active/,
+    );
+    store.startWorkflowRun(run.id);
+    store.appendWorkflowOutput(run.id, "Found one company.\n");
+    const completed = store.completeWorkflowRun(run.id);
+    assert.equal(completed.status, "COMPLETED");
+    assert.equal(completed.output, "Found one company.\n");
+    assert.ok(completed.finishedAt);
   });
 });
