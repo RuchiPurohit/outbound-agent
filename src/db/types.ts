@@ -2,6 +2,8 @@ export type CampaignStatus = "DRAFT" | "ACTIVE" | "PAUSED" | "COMPLETED";
 export type ReviewStatus = "DISCOVERED" | "APPROVED" | "REJECTED";
 export type EmailStatus = "UNKNOWN" | "PUBLICLY_LISTED" | "VERIFIED" | "EMAIL_NOT_FOUND";
 export type OutreachStatus = "DRAFT" | "APPROVED" | "READY_TO_SEND" | "SENT" | "REPLIED";
+export type WorkflowRunKind = "COMPANY_DISCOVERY" | "CONTACT_DISCOVERY" | "EMAIL_DISCOVERY";
+export type WorkflowRunStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
 
 export interface Campaign {
   id: number;
@@ -54,4 +56,17 @@ export interface Outreach {
   status: OutreachStatus;
   sentAt: string | null;
   gmailThreadId: string | null;
+}
+
+export interface WorkflowRun {
+  id: number;
+  campaignId: number;
+  kind: WorkflowRunKind;
+  status: WorkflowRunStatus;
+  details: string | null;
+  output: string;
+  error: string | null;
+  requestedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
 }
