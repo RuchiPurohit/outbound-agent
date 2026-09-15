@@ -10,6 +10,7 @@ export interface WorkflowRequest {
   targetCount?: number;
   outreachId?: number;
   feedback?: string;
+  contactIds?: number[];
 }
 
 export function buildPrompt(request: WorkflowRequest): string {
@@ -57,12 +58,14 @@ function workflowPrompt(request: WorkflowRequest): string {
         "Process only approved contacts at approved companies with sourced business emails and no existing prospect research.",
         "Use saveProspectResearch to persist at most three useful sourced signals, the strongest signal, a plausible pain hypothesis, and ConvoKit relevance.",
         "If no credible angle exists, save NO_SIGNAL using an empty signals array; never manufacture an angle.",
-        "Do not generate emails in this run. The dashboard will launch generation next.",
+        "Do not generate emails. Stop for the user to select researched contacts in the dashboard checklist.",
       ].join(" ");
     case "EMAIL_GENERATION":
       return [
         "Read AGENTS.md, docs/EMAIL_RULES.md, and prompts/email-generation.md.",
         `Generate first-touch drafts for campaign ${request.campaignId}.`,
+        `Generate ONLY for these checked contact IDs: ${JSON.stringify(request.contactIds)}.`,
+        "Do not draft for any other contact, even if they are eligible. Do not expand the selection.",
         "Only approved prospects with sourced emails, READY prospect research, and no existing outreach are eligible.",
         "Every draft must reference one sourced prospect signal in its body and link its ID through createOutreach({contactId,subject,body,researchId}).",
         "Keep every generated email in DRAFT state. Do not approve or send anything.",
@@ -100,10 +103,16 @@ export function validateRequest(store: OutboundStore, request: WorkflowRequest):
     && !eligible.some(({ id }) => !store.getProspectResearch(id))) {
     throw new WorkflowError("No approved prospects with sourced emails are awaiting research");
   }
-  if (request.kind === "EMAIL_GENERATION"
-    && !eligible.some(({ id }) => store.getProspectResearch(id)?.status === "READY"
-      && store.listOutreach(id).length === 0)) {
-    throw new WorkflowError("No researched prospects are awaiting first-touch drafts");
+  if (request.kind === "EMAIL_GENERATION") {
+    if (!request.contactIds?.length) throw new WorkflowError("Select at least one researched prospect to generate drafts");
+    if (new Set(request.contactIds).size !== request.contactIds.length) {
+      throw new WorkflowError("Selected contact IDs must be unique");
+    }
+    const allowed = new Set(eligible.filter(({ id }) => store.getProspectResearch(id)?.status === "READY"
+      && store.listOutreach(id).length === 0).map(({ id }) => id));
+    if (request.contactIds.some((id) => !Number.isSafeInteger(id) || !allowed.has(id))) {
+      throw new WorkflowError("Every selected prospect must belong to this campaign, remain approved, have an email and READY research, and have no existing draft");
+    }
   }
   if (request.kind === "DRAFT_REWRITE") {
     const draft = request.outreachId === undefined ? undefined : store.getOutreach(request.outreachId);
@@ -120,12 +129,7 @@ export function nextWorkflowRequest(store: OutboundStore, finished: WorkflowRequ
     && eligible.some(({ id }) => !store.getProspectResearch(id))) {
     return { campaignId: finished.campaignId, kind: "PROSPECT_RESEARCH" };
   }
-  if ((finished.kind === "EMAIL_DISCOVERY" || finished.kind === "PROSPECT_RESEARCH")
-    && eligible.some(({ id }) => store.getProspectResearch(id)?.status === "READY"
-      && store.listOutreach(id).length === 0)) {
-    return { campaignId: finished.campaignId, kind: "EMAIL_GENERATION" };
-  }
-  // Generation and rewrites stop at human review. Never chain an approval or send.
+  // Research stops for explicit checklist selection. Drafts stop for human review.
   return undefined;
 }
 

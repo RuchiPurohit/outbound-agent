@@ -33,4 +33,5 @@ completed prospects after an interruption.
 Write a readable report to data/campaign-<id>-research.md with signals, sources,
 the strongest signal, pain hypothesis, and ConvoKit relevance. Do not generate
 emails, change approval states, modify application code, or send anything.
-The dashboard automatically starts email generation after successful research.
+Stop after research. The user must check researched contacts in the dashboard
+before any draft generation may start.

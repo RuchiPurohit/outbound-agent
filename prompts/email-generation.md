@@ -5,6 +5,10 @@ the dashboard. Never modify application code or approval states.
 
 For generation:
 
+The dashboard supplies an explicit contact ID selection. Process ONLY those
+checked IDs. An empty or missing selection means no drafting is authorized.
+Never expand the selection to other eligible prospects.
+
 1. Use listEligibleProspects(campaignId). Both company and contact must remain
    APPROVED, with a PUBLICLY_LISTED or VERIFIED professional business email.
 2. Require getProspectResearch(contactId).status === READY. Skip NO_SIGNAL.

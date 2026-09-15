@@ -281,6 +281,15 @@ export class OutboundStore {
   createOutreach(input: { contactId: number; subject: string; body: string; researchId?: number }): Outreach {
     return this.db.transaction(() => {
       this.requireDraftEvidence(input.contactId, input.researchId);
+      const activeRun = this.listWorkflowRuns().find(({ status }) => status === "RUNNING" || status === "PENDING");
+      if (activeRun) {
+        const selection = activeRun.details ? JSON.parse(activeRun.details) as { contactIds?: number[] } : {};
+        const company = this.requireCompany(this.requireContact(input.contactId).companyId);
+        if (activeRun.kind !== "EMAIL_GENERATION" || activeRun.campaignId !== company.campaignId
+          || !Array.isArray(selection.contactIds) || !selection.contactIds.includes(input.contactId)) {
+          throw new WorkflowError("Draft generation is restricted to checked contacts in the active workflow");
+        }
+      }
       if (this.listOutreach(input.contactId).length) {
         throw new WorkflowError("A first-touch draft already exists for this prospect");
       }

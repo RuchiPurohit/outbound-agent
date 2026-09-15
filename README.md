@@ -100,18 +100,20 @@ most three useful signals per contact, the strongest signal, a conditional pain
 hypothesis, and ConvoKit relevance. Prospects without a credible signal are
 marked `NO_SIGNAL` and are not drafted.
 
-Successful research automatically launches first-touch email generation using
-`docs/EMAIL_RULES.md`. Each draft links to its cited research signal and is
-stored as `DRAFT`. Interrupted runs can be retried: completed prospect research
-and existing first-touch outreach are skipped, not duplicated.
+Research stops at a checklist. Check the researched contacts you want to draft
+for, then click **Generate drafts for checked contacts**. Only that explicit
+selection is passed to the worker and persisted in the workflow run. Empty,
+ineligible, and already-drafted selections are rejected. Every generated email
+uses `docs/EMAIL_RULES.md`, links to its cited research signal, and stays `DRAFT`.
 
-For campaigns that already finished email discovery, click **Research →
-generate drafts**. **Generate missing drafts** can resume drafting after a
-failed generation run.
+For campaigns that already finished email discovery, click **Run prospect
+research**. After a failed drafting run, select the still-undrafted contacts
+and retry; existing first-touch emails are never duplicated.
 
-The review section shows one draft at a time, with its recipient and source.
-Approve to move it atomically to `READY_TO_SEND`, request a rewrite with style
-feedback, or reject it. Rewrites remain `DRAFT`; rejected drafts are retained.
+The **Emails** section shows every saved email as a collapsible item with its
+recipient, body, status, and source. Expand a draft to approve it atomically to
+`READY_TO_SEND`, request a rewrite with style feedback, or reject it. Rewrites
+remain `DRAFT`; approved and rejected emails remain available to expand.
 The two-active-contacts-per-company limit is enforced at approval. No sending
 or Gmail integration is enabled by these stages.
 

@@ -168,3 +168,5 @@ eligible. Keep verified signals separate from pain hypotheses. Every draft
 must link to one of the prospect's sourced signals. Generated and rewritten
 outreach stays DRAFT; only an explicit human dashboard review may approve it.
 Never invoke approval operations from a research or generation workflow.
+Research must stop for checklist selection. Generate first-touch drafts only
+for the contact IDs explicitly checked in the dashboard generation request.

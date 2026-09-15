@@ -31,7 +31,7 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
 .email-preview{background:white;color:var(--ink);border:1px solid var(--line);font-family:inherit;font-size:15px;line-height:1.6;max-height:none}
 .badge.READY_TO_SEND{background:var(--green2);color:var(--green)}
 </style></head><body><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><span class="badge">Local SQLite</span></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
-<script>document.querySelectorAll('[data-select]').forEach(function(b){b.addEventListener('click',function(){b.closest('form').querySelectorAll('input[name="ids"]').forEach(function(c){c.checked=true})})})</script></body></html>`;
+<script>document.querySelectorAll('[data-select]').forEach(function(b){b.addEventListener('click',function(){b.closest('form').querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function(c){c.checked=true})})})</script></body></html>`;
 }
 
 function redirect(response: ServerResponse, path: string, message?: { error?: string; notice?: string }): void {
@@ -196,7 +196,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       if (targetCount !== undefined && targetCount > 25) {
         throw new WorkflowError("Company target count cannot exceed 25");
       }
-      const run = launchWorkflow(db, { campaignId, kind, targetCount });
+      const contactIds = kind === "EMAIL_GENERATION"
+        ? form.getAll("contactIds").map((value) => requirePositiveId(value, "selected contact ID")) : undefined;
+      const run = launchWorkflow(db, { campaignId, kind, targetCount, contactIds });
       redirect(response, `/campaigns/${campaignId}`, { notice: `Started ${humanize(run.kind)}` }); return;
     }
 
