@@ -31,6 +31,16 @@ describe("OutboundStore", () => {
     return { campaign, company };
   }
 
+  function researchFor(contactId: number): number {
+    store.recordEmailDiscovery({ contactId, emailStatus: "PUBLICLY_LISTED",
+      email: `person-${contactId}@example.com`, sourceUrl: "https://example.com/team" });
+    return store.saveProspectResearch({ contactId,
+      signals: [{ signal: "Launched shared workspaces", sourceUrl: "https://example.com/launch" }],
+      strongestSignalIndex: 0, painHypothesis: "Shared workspaces may need contextual conversations.",
+      relevance: "ConvoKit can provide chat infrastructure.",
+    }).strongestResearchId!;
+  }
+
   it("uses numeric IDs and explicit initial statuses", () => {
     const { campaign, company } = campaignAndCompany();
     assert.equal(campaign.id, 1);
@@ -47,7 +57,7 @@ describe("OutboundStore", () => {
     diskDb.close();
     const reopenedDb = openDatabase(filename);
     assert.equal(new OutboundStore(reopenedDb).getCampaign(campaign.id)?.name, "Disk campaign");
-    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 4);
+    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 5);
     reopenedDb.close();
     rmSync(directory, { recursive: true });
   });
@@ -140,7 +150,8 @@ describe("OutboundStore", () => {
     assert.throws(() => store.createOutreach({ contactId: contact.id, subject: "Subject", body: "Body" }), /APPROVED company and contact/);
     store.reviewContact(contact.id, "APPROVED");
 
-    const outreach = store.createOutreach({ contactId: contact.id, subject: "Subject", body: "Body" });
+    const researchId = researchFor(contact.id);
+    const outreach = store.createOutreach({ contactId: contact.id, subject: "Subject", body: "Body", researchId });
     assert.equal(outreach.status, "DRAFT");
     assert.throws(() => store.markOutreachSent(outreach.id), /READY_TO_SEND/);
     store.approveOutreach(outreach.id);
@@ -157,7 +168,8 @@ describe("OutboundStore", () => {
     const outreachIds = ["One", "Two", "Three"].map((name) => {
       const contact = store.createContact({ companyId: company.id, name });
       store.reviewContact(contact.id, "APPROVED");
-      const outreach = store.createOutreach({ contactId: contact.id, subject: "Subject", body: "Body" });
+      const researchId = researchFor(contact.id);
+      const outreach = store.createOutreach({ contactId: contact.id, subject: "Subject", body: "Body", researchId });
       store.approveOutreach(outreach.id);
       return outreach.id;
     });
@@ -184,5 +196,62 @@ describe("OutboundStore", () => {
     assert.equal(completed.status, "COMPLETED");
     assert.equal(completed.output, "Found one company.\n");
     assert.ok(completed.finishedAt);
+  });
+
+  it("requires sourced emails, limits signals to three, and preserves NO_SIGNAL", () => {
+    const { company } = campaignAndCompany();
+    store.reviewCompany(company.id, "APPROVED");
+    const contact = store.createContact({ companyId: company.id, name: "Pat" });
+    store.reviewContact(contact.id, "APPROVED");
+    assert.throws(() => store.saveProspectResearch({ contactId: contact.id, signals: [] }), /sourced business email/);
+    store.recordEmailDiscovery({ contactId: contact.id, emailStatus: "PUBLICLY_LISTED",
+      email: "pat@example.com", sourceUrl: "https://example.com/team" });
+    const signal = { signal: "Launched workspace", sourceUrl: "https://example.com/launch" };
+    assert.throws(() => store.saveProspectResearch({ contactId: contact.id,
+      signals: [signal, signal, signal, signal] }), /At most three/);
+    assert.throws(() => store.saveProspectResearch({ contactId: contact.id,
+      signals: [signal], strongestSignalIndex: 2, painHypothesis: "May need messaging", relevance: "Chat" }), /strongest signal/);
+    const result = store.saveProspectResearch({ contactId: contact.id, signals: [], notes: "No specific public signal" });
+    assert.equal(result.status, "NO_SIGNAL");
+    assert.equal(result.strongestResearchId, null);
+    assert.throws(() => store.createOutreach({ contactId: contact.id, subject: "Hi", body: "Hello" }), /research signal/);
+    assert.throws(() => store.saveProspectResearch({ contactId: contact.id, signals: [] }), /already exists/);
+  });
+
+  it("requires prospect-specific draft evidence and rejects duplicate first touches", () => {
+    const { company } = campaignAndCompany();
+    store.reviewCompany(company.id, "APPROVED");
+    const contact = store.createContact({ companyId: company.id, name: "Pat" });
+    store.reviewContact(contact.id, "APPROVED");
+    const researchId = researchFor(contact.id);
+    const role = store.createResearchRecord({ companyId: company.id, contactId: contact.id,
+      signal: "CTO role", sourceUrl: "https://example.com/team" });
+    assert.throws(() => store.createOutreach({ contactId: contact.id, subject: "Hi", body: "Hello", researchId: role.id }), /research signal/);
+    const draft = store.createOutreach({ contactId: contact.id, subject: "Hi", body: "Hello", researchId });
+    assert.throws(() => store.createOutreach({ contactId: contact.id, subject: "Duplicate", body: "Hello", researchId }), /already exists/);
+    store.rewriteOutreach(draft.id, { subject: "Shorter", body: "New draft", researchId });
+    assert.equal(store.getOutreach(draft.id)?.status, "DRAFT");
+    assert.equal(store.getOutreach(draft.id)?.reviewedAt, null);
+    assert.equal(store.approveOutreachForSending(draft.id).status, "READY_TO_SEND");
+    assert.ok(store.getOutreach(draft.id)?.reviewedAt);
+    assert.equal(store.getOutreach(draft.id)?.sentAt, null);
+    assert.throws(() => store.rewriteOutreach(draft.id, { subject: "Again", body: "Changed", researchId }), /Only DRAFT/);
+  });
+
+  it("retains rejection and rolls back approval when the contact limit is exceeded", () => {
+    const { company } = campaignAndCompany();
+    store.reviewCompany(company.id, "APPROVED");
+    const drafts = ["One", "Two", "Three", "Rejected"].map((name) => {
+      const contact = store.createContact({ companyId: company.id, name });
+      store.reviewContact(contact.id, "APPROVED");
+      return store.createOutreach({ contactId: contact.id, subject: name, body: "Body", researchId: researchFor(contact.id) });
+    });
+    store.approveOutreachForSending(drafts[0].id);
+    store.approveOutreachForSending(drafts[1].id);
+    assert.throws(() => store.approveOutreachForSending(drafts[2].id), /two contacts/);
+    assert.equal(store.getOutreach(drafts[2].id)?.status, "DRAFT");
+    assert.equal(store.getOutreach(drafts[2].id)?.reviewedAt, null);
+    assert.equal(store.rejectOutreach(drafts[3].id).status, "REJECTED");
+    assert.throws(() => store.approveOutreachForSending(drafts[3].id), /Only DRAFT/);
   });
 });
