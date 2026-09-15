@@ -160,3 +160,11 @@ When the user asks to "run email discovery", read and execute
 supplied by the user; otherwise use the most recently created campaign that has
 approved contacts. Process only approved contacts and never infer an address
 from an email pattern.
+
+Prospect research and email generation are separate dashboard workflows:
+`prompts/prospect-research.md` and `prompts/email-generation.md`.
+Only approved contacts at approved companies with sourced business emails are
+eligible. Keep verified signals separate from pain hypotheses. Every draft
+must link to one of the prospect's sourced signals. Generated and rewritten
+outreach stays DRAFT; only an explicit human dashboard review may approve it.
+Never invoke approval operations from a research or generation workflow.

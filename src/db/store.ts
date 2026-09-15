@@ -1,7 +1,7 @@
 import type { SqliteDatabase } from "./database.js";
 import type {
   Campaign, CampaignStatus, Company, Contact, EmailStatus, Outreach, ResearchRecord,
-  ReviewStatus, WorkflowRun, WorkflowRunKind,
+  ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch,
 } from "./types.js";
 
 type Row = Record<string, unknown>;
@@ -213,17 +213,105 @@ export class OutboundStore {
     }))();
   }
 
-  createOutreach(input: { contactId: number; subject: string; body: string }): Outreach {
-    const contact = this.requireContact(input.contactId);
-    const company = this.requireCompany(contact.companyId);
-    if (company.status !== "APPROVED" || contact.status !== "APPROVED") {
-      throw new WorkflowError("Outreach requires an APPROVED company and contact");
-    }
-    const result = this.db.prepare(`
-      INSERT INTO outreach (contact_id, subject, body, status, sent_at, gmail_thread_id)
-      VALUES (?, ?, ?, 'DRAFT', NULL, NULL)
-    `).run(input.contactId, input.subject, input.body);
-    return this.getOutreach(Number(result.lastInsertRowid))!;
+  saveProspectResearch(input: {
+    contactId: number;
+    signals: Array<{ signal: string; sourceUrl: string; notes?: string }>;
+    strongestSignalIndex?: number;
+    painHypothesis?: string;
+    relevance?: string;
+    notes?: string;
+  }): ProspectResearch {
+    return this.db.transaction(() => {
+      this.requireProspectEligible(input.contactId);
+      if (this.getProspectResearch(input.contactId)) {
+        throw new WorkflowError("Prospect research already exists; do not duplicate completed research");
+      }
+      if (input.signals.length > 3) throw new WorkflowError("At most three prospect signals are allowed");
+      const ready = input.signals.length > 0;
+      if (ready && (!Number.isInteger(input.strongestSignalIndex)
+        || input.strongestSignalIndex! < 0 || input.strongestSignalIndex! >= input.signals.length
+        || !input.painHypothesis?.trim() || !input.relevance?.trim())) {
+        throw new WorkflowError("Select a strongest signal, pain hypothesis, and ConvoKit relevance");
+      }
+      const contact = this.requireContact(input.contactId);
+      const records = input.signals.map((signal) => {
+        this.requireSourceUrl(signal.sourceUrl);
+        return this.createResearchRecord({ ...signal, companyId: contact.companyId, contactId: contact.id });
+      });
+      this.db.prepare(`
+        INSERT INTO prospect_research (
+          contact_id, status, strongest_research_id, pain_hypothesis, relevance, notes, researched_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(input.contactId, ready ? "READY" : "NO_SIGNAL",
+        ready ? records[input.strongestSignalIndex!]!.id : null,
+        ready ? input.painHypothesis : null, ready ? input.relevance : null, input.notes ?? null, now());
+      for (const record of records) {
+        this.db.prepare("INSERT INTO prospect_research_signals (contact_id, research_id) VALUES (?, ?)")
+          .run(contact.id, record.id);
+      }
+      return this.getProspectResearch(input.contactId)!;
+    })();
+  }
+
+  getProspectResearch(contactId: number): ProspectResearch | undefined {
+    const row = this.db.prepare("SELECT * FROM prospect_research WHERE contact_id = ?")
+      .get(contactId) as Row | undefined;
+    return row ? {
+      contactId: integer(row, "contact_id"), status: text(row, "status") as ProspectResearch["status"],
+      strongestResearchId: nullableInteger(row, "strongest_research_id"),
+      painHypothesis: nullableText(row, "pain_hypothesis"), relevance: nullableText(row, "relevance"),
+      notes: nullableText(row, "notes"), researchedAt: text(row, "researched_at"),
+    } : undefined;
+  }
+
+  listProspectSignals(contactId: number): ResearchRecord[] {
+    return (this.db.prepare(`
+      SELECT r.* FROM research r JOIN prospect_research_signals s ON s.research_id = r.id
+      WHERE s.contact_id = ? ORDER BY r.id
+    `).all(contactId) as Row[]).map(researchFromRow);
+  }
+
+  listEligibleProspects(campaignId: number): Contact[] {
+    return this.listCompanies({ campaignId, status: "APPROVED" })
+      .flatMap(({ id }) => this.listContacts(id))
+      .filter(({ status, email, emailStatus }) => status === "APPROVED" && email
+        && (emailStatus === "PUBLICLY_LISTED" || emailStatus === "VERIFIED"));
+  }
+
+  createOutreach(input: { contactId: number; subject: string; body: string; researchId?: number }): Outreach {
+    return this.db.transaction(() => {
+      this.requireDraftEvidence(input.contactId, input.researchId);
+      if (this.listOutreach(input.contactId).length) {
+        throw new WorkflowError("A first-touch draft already exists for this prospect");
+      }
+      const result = this.db.prepare(`
+        INSERT INTO outreach (contact_id, subject, body, status, research_id)
+        VALUES (?, ?, ?, 'DRAFT', ?)
+      `).run(input.contactId, input.subject, input.body, input.researchId);
+      return this.getOutreach(Number(result.lastInsertRowid))!;
+    })();
+  }
+
+  rewriteOutreach(id: number, input: { subject: string; body: string; researchId: number }): Outreach {
+    const draft = this.requireOutreach(id);
+    if (draft.status !== "DRAFT") throw new WorkflowError("Only DRAFT outreach can be rewritten");
+    this.requireDraftEvidence(draft.contactId, input.researchId);
+    this.db.prepare("UPDATE outreach SET subject = ?, body = ?, research_id = ? WHERE id = ?")
+      .run(input.subject, input.body, input.researchId, id);
+    return this.getOutreach(id)!;
+  }
+
+  rejectOutreach(id: number): Outreach {
+    const draft = this.transitionOutreach(id, "DRAFT", "REJECTED");
+    this.db.prepare("UPDATE outreach SET reviewed_at = ? WHERE id = ?").run(now(), id);
+    return this.getOutreach(draft.id)!;
+  }
+
+  approveOutreachForSending(id: number): Outreach {
+    return this.db.transaction(() => {
+      this.approveOutreach(id);
+      return this.markOutreachReady(id);
+    })();
   }
 
   getOutreach(id: number): Outreach | undefined {
@@ -239,7 +327,11 @@ export class OutboundStore {
   }
 
   approveOutreach(id: number): Outreach {
-    return this.transitionOutreach(id, "DRAFT", "APPROVED");
+    const draft = this.requireOutreach(id);
+    this.requireDraftEvidence(draft.contactId, draft.researchId ?? undefined);
+    this.transitionOutreach(id, "DRAFT", "APPROVED");
+    this.db.prepare("UPDATE outreach SET reviewed_at = ? WHERE id = ?").run(now(), id);
+    return this.getOutreach(id)!;
   }
 
   markOutreachReady(id: number): Outreach {
@@ -249,6 +341,8 @@ export class OutboundStore {
         throw new WorkflowError("Only APPROVED outreach can become READY_TO_SEND");
       }
       this.requireCurrentApprovals(outreach.contactId);
+      this.requireDraftEvidence(outreach.contactId, outreach.researchId ?? undefined);
+      if (!outreach.reviewedAt) throw new WorkflowError("Explicit human draft approval is required");
       this.assertContactLimit(outreach.contactId);
       this.db.prepare("UPDATE outreach SET status = 'READY_TO_SEND' WHERE id = ?").run(id);
       return this.getOutreach(id)!;
@@ -261,6 +355,8 @@ export class OutboundStore {
       throw new WorkflowError("Only READY_TO_SEND outreach can be marked SENT");
     }
     this.requireCurrentApprovals(outreach.contactId);
+    this.requireDraftEvidence(outreach.contactId, outreach.researchId ?? undefined);
+    this.assertContactLimit(outreach.contactId);
     this.db.prepare(`
       UPDATE outreach SET status = 'SENT', sent_at = ?, gmail_thread_id = ? WHERE id = ?
     `).run(now(), gmailThreadId ?? null, id);
@@ -374,6 +470,35 @@ export class OutboundStore {
     }
   }
 
+  private requireProspectEligible(contactId: number): Contact {
+    this.requireCurrentApprovals(contactId);
+    const contact = this.requireContact(contactId);
+    if (!contact.email || !["PUBLICLY_LISTED", "VERIFIED"].includes(contact.emailStatus)) {
+      throw new WorkflowError("Prospect research and drafts require a sourced business email");
+    }
+    return contact;
+  }
+
+  private requireDraftEvidence(contactId: number, researchId: number | undefined): void {
+    const contact = this.requireProspectEligible(contactId);
+    const analysis = this.getProspectResearch(contactId);
+    const evidence = researchId === undefined ? undefined : this.getResearchRecord(researchId);
+    if (analysis?.status !== "READY" || !evidence || evidence.contactId !== contactId
+      || evidence.companyId !== contact.companyId
+      || !this.listProspectSignals(contactId).some(({ id }) => id === researchId)) {
+      throw new WorkflowError("Every draft must reference a sourced prospect research signal");
+    }
+    this.requireSourceUrl(evidence.sourceUrl);
+  }
+
+  private requireSourceUrl(sourceUrl: string): void {
+    try {
+      const url = new URL(sourceUrl);
+      if (url.protocol === "http:" || url.protocol === "https:") return;
+    } catch { /* Invalid source URL. */ }
+    throw new WorkflowError("Research requires a public HTTP(S) source URL");
+  }
+
   private requireCampaign(id: number): Campaign {
     const value = this.getCampaign(id);
     if (!value) throw new WorkflowError(`Campaign not found: ${id}`);
@@ -432,7 +557,8 @@ function researchFromRow(row: Row): ResearchRecord {
 function outreachFromRow(row: Row): Outreach {
   return { id: integer(row, "id"), contactId: integer(row, "contact_id"), subject: text(row, "subject"),
     body: text(row, "body"), status: text(row, "status") as Outreach["status"],
-    sentAt: nullableText(row, "sent_at"), gmailThreadId: nullableText(row, "gmail_thread_id") };
+    sentAt: nullableText(row, "sent_at"), gmailThreadId: nullableText(row, "gmail_thread_id"),
+    researchId: nullableInteger(row, "research_id"), reviewedAt: nullableText(row, "reviewed_at") };
 }
 function workflowRunFromRow(row: Row): WorkflowRun {
   return {

@@ -91,3 +91,30 @@ the installed Codex CLI and the same local SQLite database as the CLI commands.
 
 Set `OUTBOUND_PORT` to use a different port or `OUTBOUND_DB_PATH` to use a
 different SQLite file.
+
+### Prospect research, drafting, and review
+
+After email discovery, the dashboard automatically researches approved
+prospects at approved companies with sourced business emails. It stores at
+most three useful signals per contact, the strongest signal, a conditional pain
+hypothesis, and ConvoKit relevance. Prospects without a credible signal are
+marked `NO_SIGNAL` and are not drafted.
+
+Successful research automatically launches first-touch email generation using
+`docs/EMAIL_RULES.md`. Each draft links to its cited research signal and is
+stored as `DRAFT`. Interrupted runs can be retried: completed prospect research
+and existing first-touch outreach are skipped, not duplicated.
+
+For campaigns that already finished email discovery, click **Research →
+generate drafts**. **Generate missing drafts** can resume drafting after a
+failed generation run.
+
+The review section shows one draft at a time, with its recipient and source.
+Approve to move it atomically to `READY_TO_SEND`, request a rewrite with style
+feedback, or reject it. Rewrites remain `DRAFT`; rejected drafts are retained.
+The two-active-contacts-per-company limit is enforced at approval. No sending
+or Gmail integration is enabled by these stages.
+
+The saved runbooks are `prompts/prospect-research.md` and
+`prompts/email-generation.md`. Their generated Markdown reports are covered by
+the existing `data/campaign-*.md` ignore pattern.

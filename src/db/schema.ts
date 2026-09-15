@@ -205,4 +205,77 @@ export const migrations: readonly string[] = [
       ON workflow_runs(campaign_id, requested_at DESC);
     CREATE INDEX workflow_runs_status_idx ON workflow_runs(status);
   `,
+  `
+    CREATE TABLE prospect_research (
+      contact_id INTEGER PRIMARY KEY REFERENCES contacts(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('READY', 'NO_SIGNAL')),
+      strongest_research_id INTEGER REFERENCES research(id),
+      pain_hypothesis TEXT,
+      relevance TEXT,
+      notes TEXT,
+      researched_at TEXT NOT NULL,
+      CHECK ((status = 'READY' AND strongest_research_id IS NOT NULL
+        AND pain_hypothesis IS NOT NULL AND relevance IS NOT NULL
+        AND length(trim(pain_hypothesis)) > 0 AND length(trim(relevance)) > 0)
+        OR (status = 'NO_SIGNAL' AND strongest_research_id IS NULL
+          AND pain_hypothesis IS NULL AND relevance IS NULL))
+    ) STRICT;
+    CREATE TABLE prospect_research_signals (
+      contact_id INTEGER NOT NULL REFERENCES prospect_research(contact_id) ON DELETE CASCADE,
+      research_id INTEGER NOT NULL REFERENCES research(id),
+      PRIMARY KEY (contact_id, research_id)
+    ) STRICT;
+
+    DROP TRIGGER outreach_status_transition;
+    ALTER TABLE outreach RENAME TO outreach_v4;
+    CREATE TABLE outreach (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+      subject TEXT NOT NULL CHECK (length(trim(subject)) > 0),
+      body TEXT NOT NULL CHECK (length(trim(body)) > 0),
+      status TEXT NOT NULL DEFAULT 'DRAFT'
+        CHECK (status IN ('DRAFT', 'APPROVED', 'READY_TO_SEND', 'SENT', 'REPLIED', 'REJECTED')),
+      sent_at TEXT,
+      gmail_thread_id TEXT,
+      research_id INTEGER REFERENCES research(id),
+      reviewed_at TEXT,
+      CHECK (status NOT IN ('SENT', 'REPLIED') OR sent_at IS NOT NULL)
+    ) STRICT;
+    INSERT INTO outreach (id, contact_id, subject, body, status, sent_at, gmail_thread_id)
+      SELECT id, contact_id, subject, body, status, sent_at, gmail_thread_id FROM outreach_v4;
+    DROP TABLE outreach_v4;
+    CREATE INDEX outreach_contact_status_idx ON outreach(contact_id, status);
+    CREATE TRIGGER outreach_status_transition
+    BEFORE UPDATE OF status ON outreach
+    WHEN NOT (
+      OLD.status = NEW.status
+      OR (OLD.status = 'DRAFT' AND NEW.status IN ('APPROVED', 'REJECTED'))
+      OR (OLD.status = 'APPROVED' AND NEW.status = 'READY_TO_SEND')
+      OR (OLD.status = 'READY_TO_SEND' AND NEW.status = 'SENT')
+      OR (OLD.status = 'SENT' AND NEW.status = 'REPLIED')
+    )
+    BEGIN SELECT RAISE(ABORT, 'invalid outreach status transition'); END;
+
+    ALTER TABLE workflow_runs RENAME TO workflow_runs_v4;
+    CREATE TABLE workflow_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('COMPANY_DISCOVERY', 'CONTACT_DISCOVERY',
+        'EMAIL_DISCOVERY', 'PROSPECT_RESEARCH', 'EMAIL_GENERATION', 'DRAFT_REWRITE')),
+      status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED')),
+      details TEXT,
+      output TEXT NOT NULL DEFAULT '',
+      error TEXT,
+      requested_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      CHECK (status != 'RUNNING' OR started_at IS NOT NULL),
+      CHECK (status NOT IN ('COMPLETED', 'FAILED') OR finished_at IS NOT NULL)
+    ) STRICT;
+    INSERT INTO workflow_runs SELECT * FROM workflow_runs_v4;
+    DROP TABLE workflow_runs_v4;
+    CREATE INDEX workflow_runs_campaign_requested_idx ON workflow_runs(campaign_id, requested_at DESC);
+    CREATE INDEX workflow_runs_status_idx ON workflow_runs(status);
+  `,
 ];
