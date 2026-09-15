@@ -42,7 +42,7 @@ describe("Prospect workflow", () => {
       email();
       const ready = renderProspectStages(store, campaign.id);
       assert.match(ready, /Approved prospects with business emails are ready for research/);
-      assert.match(ready, /Click Research → generate drafts/);
+      assert.match(ready, /Click Run prospect research/);
       assert.doesNotMatch(ready, /then discover their business emails to unlock/);
       const run = store.createWorkflowRun({ campaignId: campaign.id, kind: "EMAIL_DISCOVERY" });
       store.startWorkflowRun(run.id);
@@ -52,11 +52,11 @@ describe("Prospect workflow", () => {
       store.startWorkflowRun(researchRun.id);
       const running = renderProspectStages(store, campaign.id);
       assert.match(running, /Prospect research is in progress/);
-      assert.doesNotMatch(running, /Click Research → generate drafts/);
+      assert.doesNotMatch(running, /Click Run prospect research/);
     } finally { db.close(); }
   });
 
-  it("chains email discovery to research to generation, then stops for human approval", async () => {
+  it("chains email discovery to research, then requires explicit selection before drafting", async () => {
     const { db, store, campaign, contact, email, research } = fixture();
     const prompts: string[] = [];
     try {
@@ -74,6 +74,12 @@ describe("Prospect workflow", () => {
         return spawn(process.execPath, ["-e", "console.log('Simulated worker completed')"]);
       };
       launchWorkflow(db, { campaignId: campaign.id, kind: "EMAIL_DISCOVERY" }, {
+        resolveExecutable: () => "simulated-codex", spawnProcess: fakeSpawn,
+      });
+      await waitForRuns(store, 2);
+      assert.equal(store.listOutreach(contact.id).length, 0);
+      assert.equal(nextWorkflowRequest(store, { campaignId: campaign.id, kind: "PROSPECT_RESEARCH" }), undefined);
+      launchWorkflow(db, { campaignId: campaign.id, kind: "EMAIL_GENERATION", contactIds: [contact.id] }, {
         resolveExecutable: () => "simulated-codex", spawnProcess: fakeSpawn,
       });
       await waitForRuns(store, 3);
@@ -100,8 +106,11 @@ describe("Prospect workflow", () => {
       assert.equal(store.listOutreach(contact.id).length, 0);
       store.saveProspectResearch({ contactId: contact.id, signals: [], notes: "No useful signal" });
       assert.equal(nextWorkflowRequest(store, { campaignId: campaign.id, kind: "PROSPECT_RESEARCH" }), undefined);
-      assert.throws(() => validateRequest(store, { campaignId: campaign.id, kind: "EMAIL_GENERATION" }), /No researched/);
+      assert.throws(() => validateRequest(store, { campaignId: campaign.id, kind: "EMAIL_GENERATION",
+        contactIds: [contact.id] }), /Every selected prospect/);
       assert.match(renderProspectStages(store, campaign.id), /No credible angle/);
+      assert.match(renderProspectStages(store, campaign.id),
+        new RegExp(`name="contactIds" value="${contact.id}"[^>]*disabled`));
     } finally { db.close(); }
   });
 
@@ -126,7 +135,7 @@ describe("Prospect workflow", () => {
     } finally { db.close(); }
   });
 
-  it("shows sourced research and one full draft at a time with review controls", () => {
+  it("shows all saved emails as collapsible items with draft-only review controls", () => {
     const { db, store, campaign, company, contact, email, research } = fixture();
     try {
       email(); research();
@@ -143,7 +152,10 @@ describe("Prospect workflow", () => {
         researchId: analysis.strongestResearchId! });
       const html = renderProspectStages(store, campaign.id, draft.id);
       assert.match(html, /SECOND_BODY/);
-      assert.doesNotMatch(html, /FIRST_BODY/);
+      assert.match(html, /FIRST_BODY/);
+      assert.match(html, new RegExp(`class="email-draft" id="email-${draft.id}" open`));
+      assert.doesNotMatch(renderProspectStages(store, campaign.id), /class="email-draft"[^>]* open/);
+      assert.match(html, /<h2>Emails<\/h2>/);
       assert.match(html, /Pain hypothesis \(not verified\)/);
       assert.match(html, /href="https:\/\/example.com\/jobs"/);
       assert.match(html, /Approve → Ready to send/);
@@ -151,6 +163,82 @@ describe("Prospect workflow", () => {
       assert.match(html, /Reject draft/);
       assert.match(html, /Pat &lt;Lee&gt;/);
       assert.match(html, /no sending integration is enabled/);
+    } finally { db.close(); }
+  });
+
+  it("shows unchecked selection boxes and disables contacts with existing drafts or no signal", () => {
+    const { db, store, campaign, contact, email, research } = fixture();
+    try {
+      email(); research();
+      const ready = renderProspectStages(store, campaign.id);
+      assert.match(ready, new RegExp(`name="contactIds" value="${contact.id}"[^>]*>`));
+      assert.doesNotMatch(ready, /type="checkbox"[^>]*\schecked/);
+      assert.match(ready, /Generate drafts for checked contacts/);
+      assert.doesNotMatch(ready, /automatically starts draft generation|Research → generate drafts|Generate missing drafts/);
+      store.createOutreach({ contactId: contact.id, subject: "Subject", body: "Body",
+        researchId: store.getProspectResearch(contact.id)!.strongestResearchId! });
+      const drafted = renderProspectStages(store, campaign.id);
+      assert.match(drafted, new RegExp(`name="contactIds" value="${contact.id}"[^>]*disabled`));
+      assert.match(drafted, /Draft already exists/);
+      const draft = store.listOutreach(contact.id)[0]!;
+      store.rejectOutreach(draft.id);
+      const rejected = renderProspectStages(store, campaign.id);
+      assert.match(rejected, /email-draft/);
+      assert.match(rejected, /REJECTED/);
+      assert.match(rejected, /Body/);
+      assert.doesNotMatch(rejected, /Approve → Ready to send|Request rewrite|Reject draft/);
+    } finally { db.close(); }
+  });
+
+  it("rejects empty, duplicate, cross-campaign, unresearched, and already-drafted selections", () => {
+    const { db, store, campaign, contact, email, research } = fixture();
+    try {
+      email();
+      const request = { campaignId: campaign.id, kind: "EMAIL_GENERATION" as const };
+      assert.throws(() => validateRequest(store, request), /Select at least one/);
+      assert.throws(() => validateRequest(store, { ...request, contactIds: [] }), /Select at least one/);
+      assert.throws(() => validateRequest(store, { ...request, contactIds: [contact.id] }), /Every selected prospect/);
+      research();
+      validateRequest(store, { ...request, contactIds: [contact.id] });
+      assert.throws(() => validateRequest(store, { ...request, contactIds: [contact.id, contact.id] }), /unique/);
+      assert.throws(() => validateRequest(store, { ...request, contactIds: [9999] }), /Every selected prospect/);
+      const other = store.createCampaign({ name: "Other", segment: "SaaS" });
+      assert.throws(() => validateRequest(store, { ...request, campaignId: other.id,
+        contactIds: [contact.id] }), /Every selected prospect/);
+      store.createOutreach({ contactId: contact.id, subject: "Subject", body: "Body",
+        researchId: store.getProspectResearch(contact.id)!.strongestResearchId! });
+      assert.throws(() => validateRequest(store, { ...request, contactIds: [contact.id] }), /Every selected prospect/);
+    } finally { db.close(); }
+  });
+
+  it("persists the selection and prevents the worker from drafting for an unchecked eligible contact", async () => {
+    const { db, store, campaign, company, contact, email, research } = fixture();
+    try {
+      email(); research();
+      const checked = store.createContact({ companyId: company.id, name: "Checked contact" });
+      store.reviewContact(checked.id, "APPROVED");
+      store.recordEmailDiscovery({ contactId: checked.id, emailStatus: "PUBLICLY_LISTED",
+        email: "checked@example.com", sourceUrl: "https://example.com/team" });
+      const analysis = store.saveProspectResearch({ contactId: checked.id,
+        signals: [{ signal: "Launched workspace", sourceUrl: "https://example.com/launch" }],
+        strongestSignalIndex: 0, painHypothesis: "May need messaging", relevance: "Chat infrastructure" });
+      const fakeSpawn = (_executable: string, args: string[]) => {
+        const prompt = args[args.length - 1]!;
+        assert.ok(prompt.includes(`ONLY for these checked contact IDs: [${checked.id}]`));
+        assert.throws(() => store.createOutreach({ contactId: contact.id, subject: "Unauthorized", body: "Body",
+          researchId: store.getProspectResearch(contact.id)!.strongestResearchId! }), /restricted to checked contacts/);
+        store.createOutreach({ contactId: checked.id, subject: "Checked draft", body: "Body",
+          researchId: analysis.strongestResearchId! });
+        return spawn(process.execPath, ["-e", "console.log('Simulated selected drafting completed')"]);
+      };
+      const run = launchWorkflow(db, { campaignId: campaign.id, kind: "EMAIL_GENERATION", contactIds: [checked.id] }, {
+        resolveExecutable: () => "simulated-codex", spawnProcess: fakeSpawn,
+      });
+      await waitForRuns(store, 1);
+      assert.deepEqual(JSON.parse(store.getWorkflowRun(run.id)!.details!).contactIds, [checked.id]);
+      assert.equal(store.listOutreach(contact.id).length, 0);
+      assert.equal(store.listOutreach(checked.id).length, 1);
+      assert.equal(store.listOutreach(checked.id)[0]?.status, "DRAFT");
     } finally { db.close(); }
   });
 
