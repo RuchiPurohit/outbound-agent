@@ -114,9 +114,21 @@ The **Emails** section shows every saved email as a collapsible item with its
 recipient, body, status, and source. Expand a draft to approve it atomically to
 `READY_TO_SEND`, request a rewrite with style feedback, or reject it. Rewrites
 remain `DRAFT`; approved and rejected emails remain available to expand.
-The two-active-contacts-per-company limit is enforced at approval. No sending
-or Gmail integration is enabled by these stages.
+The two-active-contacts-per-company limit is enforced at approval. Approval
+alone never sends: Gmail sending requires a separate confirmation.
 
 The saved runbooks are `prompts/prospect-research.md` and
 `prompts/email-generation.md`. Their generated Markdown reports are covered by
 the existing `data/campaign-*.md` ignore pattern.
+
+### Gmail sending
+
+Follow [Gmail setup](docs/GMAIL_SETUP.md) to connect `aiwithruchi@gmail.com`.
+The dashboard's **Gmail** page provides a separate, clearly labeled test email
+to `abstract.ruch@gmail.com`. No prospect outreach state changes during a test.
+
+For an approved email, expand it under **Emails**, click **Review & send via
+Gmail**, check the exact sender, recipient, subject, and body, then confirm.
+Successful delivery stores Gmail message/thread IDs and marks the email `SENT`.
+Uncertain delivery blocks another send to avoid duplicates; no automatic
+retries or automatic sending are implemented.
