@@ -47,6 +47,25 @@ describe("OutboundStore", () => {
     assert.equal(campaign.status, "DRAFT");
     assert.equal(company.id, 1);
     assert.equal(company.status, "DISCOVERED");
+    assert.equal(company.chatFeatureStatus, "UNKNOWN");
+    assert.equal(company.chatFeatureSourceUrl, null);
+  });
+
+  it("stores sourced chat-feature findings without claiming absence", () => {
+    const campaign = store.createCampaign({ name: "Chat check", segment: "SaaS" });
+    const present = store.createCompany({ campaignId: campaign.id, name: "Chat Co",
+      domain: "chat.test", chatFeatureStatus: "PRESENT",
+      chatFeatureSourceUrl: "https://chat.test/docs/messaging" });
+    const notFound = store.createCompany({ campaignId: campaign.id, name: "Other Co",
+      domain: "other.test", chatFeatureStatus: "NO_PUBLIC_EVIDENCE" });
+
+    assert.equal(present.chatFeatureSourceUrl, "https://chat.test/docs/messaging");
+    assert.equal(notFound.chatFeatureStatus, "NO_PUBLIC_EVIDENCE");
+    assert.throws(() => store.createCompany({ campaignId: campaign.id, name: "Unsupported",
+      domain: "unsupported.test", chatFeatureStatus: "PRESENT" }), /source URL/);
+    assert.throws(() => store.createCompany({ campaignId: campaign.id, name: "Contradiction",
+      domain: "contradiction.test", chatFeatureStatus: "NO_PUBLIC_EVIDENCE",
+      chatFeatureSourceUrl: "https://contradiction.test/chat" }), /only be stored/);
   });
 
   it("persists records after reopening the SQLite file", () => {
@@ -57,7 +76,7 @@ describe("OutboundStore", () => {
     diskDb.close();
     const reopenedDb = openDatabase(filename);
     assert.equal(new OutboundStore(reopenedDb).getCampaign(campaign.id)?.name, "Disk campaign");
-    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 6);
+    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 7);
     reopenedDb.close();
     rmSync(directory, { recursive: true });
   });
