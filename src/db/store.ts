@@ -1,7 +1,7 @@
 import type { SqliteDatabase } from "./database.js";
 import { randomUUID } from "node:crypto";
 import type {
-  Campaign, CampaignStatus, Company, Contact, EmailStatus, Outreach, ResearchRecord,
+  Campaign, CampaignStatus, ChatFeatureStatus, Company, Contact, EmailStatus, Outreach, ResearchRecord,
   ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch, EmailDelivery,
 } from "./types.js";
 
@@ -43,15 +43,27 @@ export class OutboundStore {
     employeeCount?: number;
     score?: number;
     reason?: string;
+    chatFeatureStatus?: ChatFeatureStatus;
+    chatFeatureSourceUrl?: string;
   }): Company {
     this.requireCampaign(input.campaignId);
+    const chatFeatureStatus = input.chatFeatureStatus ?? "UNKNOWN";
+    const chatFeatureSourceUrl = input.chatFeatureSourceUrl?.trim() || null;
+    if (chatFeatureStatus === "PRESENT" && !chatFeatureSourceUrl) {
+      throw new WorkflowError("A public source URL is required when chat is PRESENT");
+    }
+    if (chatFeatureStatus !== "PRESENT" && chatFeatureSourceUrl) {
+      throw new WorkflowError("A chat source URL may only be stored when chat is PRESENT");
+    }
     const result = this.db.prepare(`
       INSERT INTO companies (
-        campaign_id, name, domain, location, employee_count, score, reason, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'DISCOVERED', ?)
+        campaign_id, name, domain, location, employee_count, score, reason,
+        chat_feature_status, chat_feature_source_url, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISCOVERED', ?)
     `).run(
       input.campaignId, input.name, input.domain, input.location ?? null,
-      input.employeeCount ?? null, input.score ?? null, input.reason ?? null, now(),
+      input.employeeCount ?? null, input.score ?? null, input.reason ?? null,
+      chatFeatureStatus, chatFeatureSourceUrl, now(),
     );
     return this.getCompany(Number(result.lastInsertRowid))!;
   }
@@ -651,7 +663,10 @@ function companyFromRow(row: Row): Company {
   return { id: integer(row, "id"), campaignId: integer(row, "campaign_id"), name: text(row, "name"),
     domain: text(row, "domain"), location: nullableText(row, "location"),
     employeeCount: nullableInteger(row, "employee_count"), score: nullableInteger(row, "score"),
-    reason: nullableText(row, "reason"), status: text(row, "status") as Company["status"],
+    reason: nullableText(row, "reason"),
+    chatFeatureStatus: text(row, "chat_feature_status") as Company["chatFeatureStatus"],
+    chatFeatureSourceUrl: nullableText(row, "chat_feature_source_url"),
+    status: text(row, "status") as Company["status"],
     createdAt: text(row, "created_at") };
 }
 function contactFromRow(row: Row): Contact {

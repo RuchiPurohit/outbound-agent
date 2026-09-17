@@ -1,5 +1,6 @@
 export type CampaignStatus = "DRAFT" | "ACTIVE" | "PAUSED" | "COMPLETED";
 export type ReviewStatus = "DISCOVERED" | "APPROVED" | "REJECTED";
+export type ChatFeatureStatus = "PRESENT" | "NO_PUBLIC_EVIDENCE" | "UNKNOWN";
 export type EmailStatus = "UNKNOWN" | "PUBLICLY_LISTED" | "VERIFIED" | "EMAIL_NOT_FOUND";
 export type OutreachStatus = "DRAFT" | "APPROVED" | "READY_TO_SEND" | "SENT" | "REPLIED" | "REJECTED";
 export type WorkflowRunKind = "COMPANY_DISCOVERY" | "CONTACT_DISCOVERY" | "EMAIL_DISCOVERY"
@@ -23,6 +24,8 @@ export interface Company {
   employeeCount: number | null;
   score: number | null;
   reason: string | null;
+  chatFeatureStatus: ChatFeatureStatus;
+  chatFeatureSourceUrl: string | null;
   status: ReviewStatus;
   createdAt: string;
 }

@@ -15,6 +15,9 @@ if (campaignId !== undefined && (!Number.isSafeInteger(campaignId) || campaignId
       Location: company.location ?? "UNKNOWN",
       Employees: company.employeeCount ?? "UNKNOWN",
       Score: company.score ?? "UNKNOWN",
+      "Chat feature": company.chatFeatureStatus === "PRESENT" ? "YES"
+        : company.chatFeatureStatus === "NO_PUBLIC_EVIDENCE" ? "NO PUBLIC EVIDENCE" : "UNKNOWN",
+      "Chat source": company.chatFeatureSourceUrl ?? "—",
       Status: company.status,
       Reason: company.reason ?? "UNKNOWN",
     }));

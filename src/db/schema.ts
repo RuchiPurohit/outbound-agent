@@ -318,4 +318,9 @@ export const migrations: readonly string[] = [
     )
     BEGIN SELECT RAISE(ABORT, 'invalid outreach status transition'); END;
   `,
+  `
+    ALTER TABLE companies ADD COLUMN chat_feature_status TEXT NOT NULL DEFAULT 'UNKNOWN'
+      CHECK (chat_feature_status IN ('PRESENT', 'NO_PUBLIC_EVIDENCE', 'UNKNOWN'));
+    ALTER TABLE companies ADD COLUMN chat_feature_source_url TEXT;
+  `,
 ];

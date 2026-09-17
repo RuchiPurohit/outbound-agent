@@ -43,6 +43,8 @@ const humanize = (value: string): string => value.toLowerCase().replaceAll("_", 
 function layout(title: string, body: string, options: { refreshing?: boolean } = {}): string {
   body = body.replace(/<form\b[^>]*method="post"[^>]*>/g,
     (form) => `${form}<input type="hidden" name="csrfToken" value="${csrfToken}">`);
+  body = body.replace("<th>Score</th><th>Why ConvoKit</th>",
+    "<th>Score</th><th>Chat feature</th><th>Why ConvoKit</th>");
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)} · Outbound</title>${options.refreshing ? '<meta http-equiv="refresh" content="3">' : ""}
@@ -127,7 +129,12 @@ function campaignPage(campaign: Campaign, url: URL): string {
 
   const companyRows = companies.map((company) => {
     const signal = sourceFor(research, company.id);
-    return `<tr><td><input class="check" type="checkbox" name="ids" value="${company.id}" aria-label="Select ${escapeHtml(company.name)}"></td><td><strong>${escapeHtml(company.name)}</strong><br><a href="https://${escapeHtml(company.domain)}" target="_blank" rel="noreferrer">${escapeHtml(company.domain)}</a></td><td>${escapeHtml(company.location ?? "Unknown")}<br><span class="muted">${company.employeeCount ?? "?"} employees</span></td><td class="score">${company.score ?? "—"}</td><td>${escapeHtml(company.reason ?? "No reason recorded")}</td><td class="source">${signal ? `${escapeHtml(signal.signal)}<br><a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noreferrer">Source ↗</a>` : '<span class="muted">No source recorded</span>'}</td><td><span class="badge ${company.status}">${humanize(company.status)}</span></td></tr>`;
+    const chat = company.chatFeatureStatus === "PRESENT"
+      ? `<span class="badge APPROVED">Yes</span>${company.chatFeatureSourceUrl ? `<br><a href="${escapeHtml(company.chatFeatureSourceUrl)}" target="_blank" rel="noreferrer">Evidence ↗</a>` : ""}`
+      : company.chatFeatureStatus === "NO_PUBLIC_EVIDENCE"
+        ? '<span class="badge UNKNOWN">No public evidence</span>'
+        : '<span class="badge UNKNOWN">Unknown</span>';
+    return `<tr><td><input class="check" type="checkbox" name="ids" value="${company.id}" aria-label="Select ${escapeHtml(company.name)}"></td><td><strong>${escapeHtml(company.name)}</strong><br><a href="https://${escapeHtml(company.domain)}" target="_blank" rel="noreferrer">${escapeHtml(company.domain)}</a></td><td>${escapeHtml(company.location ?? "Unknown")}<br><span class="muted">${company.employeeCount ?? "?"} employees</span></td><td class="score">${company.score ?? "—"}</td><td>${chat}</td><td>${escapeHtml(company.reason ?? "No reason recorded")}</td><td class="source">${signal ? `${escapeHtml(signal.signal)}<br><a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noreferrer">Source ↗</a>` : '<span class="muted">No source recorded</span>'}</td><td><span class="badge ${company.status}">${humanize(company.status)}</span></td></tr>`;
   }).join("");
 
   const contactRows = contacts.map((contact) => {
