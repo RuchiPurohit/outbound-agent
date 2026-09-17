@@ -31,7 +31,7 @@ it("migrates version 4 without losing existing outreach or workflow output", () 
     assert.equal(store.getOutreach(1)?.researchId, null);
     assert.equal(store.getWorkflowRun(1)?.output, "Existing output");
     assert.deepEqual(db.pragma("foreign_key_check"), []);
-    assert.equal(db.pragma("user_version", { simple: true }), 5);
+    assert.equal(db.pragma("user_version", { simple: true }), 6);
     assert.throws(() => store.approveOutreachForSending(1), /sourced business email/);
   } finally { db.close(); rmSync(directory, { recursive: true }); }
 });

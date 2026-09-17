@@ -162,7 +162,7 @@ describe("Prospect workflow", () => {
       assert.match(html, /Request rewrite/);
       assert.match(html, /Reject draft/);
       assert.match(html, /Pat &lt;Lee&gt;/);
-      assert.match(html, /no sending integration is enabled/);
+      assert.match(html, /Approval alone never sends an email/);
     } finally { db.close(); }
   });
 
