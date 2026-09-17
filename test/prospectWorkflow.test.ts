@@ -248,5 +248,14 @@ describe("Prospect workflow", () => {
     assert.match(prompt, /Rewrite outreach 4 in campaign 2/);
     assert.match(prompt, /Less salesy/);
     assert.match(prompt, /Never send messages/);
+    const generation = buildPrompt({ campaignId: 2, kind: "EMAIL_GENERATION", contactIds: [7] });
+    assert.match(generation, /Type A, Type B, automatic-qualifier, and LOW_FIT/);
+    assert.match(generation, /first-party sources/);
+    assert.match(generation, /one first-touch draft, not follow-ups/);
+    assert.match(generation, /at least MEDIUM fit/);
+    const discovery = buildPrompt({ campaignId: 2, kind: "COMPANY_DISCOVERY", targetCount: 5 });
+    assert.match(discovery, /automatically qualify/);
+    assert.match(discovery, /engagement benefit as a hypothesis/);
+    assert.match(discovery, /never fill the quota with low-fit candidates/);
   });
 });

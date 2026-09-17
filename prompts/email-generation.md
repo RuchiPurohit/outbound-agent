@@ -16,8 +16,18 @@ Never expand the selection to other eligible prospects.
    Do not duplicate first-touch emails on retry.
 4. Read listProspectSignals(contactId), strongestResearchId, painHypothesis,
    and relevance. Reference the strongest verified signal in the email body.
-5. Use createOutreach({contactId, subject, body, researchId}) to store one DRAFT.
+5. Apply the qualification and prospect-type rules in `docs/EMAIL_RULES.md`.
+   Re-check the workflow using current first-party sources and verify every
+   mentioned ConvoKit capability against convokit.app or convokit.app/docs.
+   Sourced comments, forums, support discussions, or collaboration features and
+   sourced product-specific chat engagement hypotheses are automatic qualifiers:
+   treat them as at least MEDIUM fit and create a conditional Type B draft. Do
+   not discard them merely because embedded chat, both participant roles, or
+   internal demand are not public. For other LOW-fit prospects, record the skip
+   and create no draft.
+6. Use createOutreach({contactId, subject, body, researchId}) to store one DRAFT.
    researchId must identify the cited prospect signal, not role/email evidence.
+   This workflow creates one first-touch only, not follow-ups.
 
 For a requested rewrite:
 
@@ -27,6 +37,8 @@ For a requested rewrite:
 - Use rewriteOutreach(id, {subject, body, researchId}); update the same record.
 - Never rewrite APPROVED, READY_TO_SEND, REJECTED, SENT, or REPLIED emails.
 
-Write/update data/campaign-<id>-drafts.md and summarize completed draft IDs.
+Write/update data/campaign-<id>-drafts.md with fit, prospect type, sales thesis,
+sourced observations, proposed workflow, conversation context, and completed or
+skipped draft IDs. Summarize completed draft IDs.
 No messages may be sent, no Gmail drafts created, and no approval granted.
 The workflow must stop for human review.

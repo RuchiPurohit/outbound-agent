@@ -85,6 +85,14 @@ already exists as a product feature. Record `PRESENT` only with direct public
 evidence. Use `NO_PUBLIC_EVIDENCE` after a completed search finds none; this is
 not proof that the feature is absent. Use `UNKNOWN` when the check is incomplete.
 
+Company discovery must apply the messaging-fit gate in `docs/ICP.md` before
+persisting a candidate. Human-to-AI chat alone is not a ConvoKit use case.
+Sourced comments, forums, support discussions, or collaboration features are
+automatic messaging-fit qualifiers. A plausible product-specific hypothesis
+that chat could improve engagement is also an automatic qualifier; persist the
+observed evidence and keep the benefit explicitly hypothetical. Products where
+messaging/realtime collaboration is already mature core IP remain a negative.
+
 If something cannot be verified, mark it UNKNOWN.
 
 ## Email discovery
