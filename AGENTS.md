@@ -80,6 +80,11 @@ Never invent:
 
 Important claims must have a source URL.
 
+Company discovery must explicitly check whether chat or user-to-user messaging
+already exists as a product feature. Record `PRESENT` only with direct public
+evidence. Use `NO_PUBLIC_EVIDENCE` after a completed search finds none; this is
+not proof that the feature is absent. Use `UNKNOWN` when the check is incomplete.
+
 If something cannot be verified, mark it UNKNOWN.
 
 ## Email discovery
