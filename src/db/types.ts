@@ -59,6 +59,27 @@ export interface Outreach {
   gmailThreadId: string | null;
   researchId: number | null;
   reviewedAt: string | null;
+  approvedRecipient: string | null;
+  approvedSubject: string | null;
+  approvedBody: string | null;
+}
+
+export type DeliveryStatus = "PREPARING" | "SENDING" | "SENT" | "FAILED" | "UNCERTAIN";
+
+export interface EmailDelivery {
+  id: string;
+  outreachId: number | null;
+  kind: "OUTREACH" | "TEST";
+  fromEmail: string;
+  toEmail: string;
+  subject: string;
+  body: string;
+  status: DeliveryStatus;
+  gmailMessageId: string | null;
+  gmailThreadId: string | null;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
 }
 
 export interface ProspectResearch {

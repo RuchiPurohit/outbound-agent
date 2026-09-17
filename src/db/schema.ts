@@ -278,4 +278,44 @@ export const migrations: readonly string[] = [
     CREATE INDEX workflow_runs_campaign_requested_idx ON workflow_runs(campaign_id, requested_at DESC);
     CREATE INDEX workflow_runs_status_idx ON workflow_runs(status);
   `,
+  `
+    ALTER TABLE outreach ADD COLUMN approved_recipient TEXT;
+    ALTER TABLE outreach ADD COLUMN approved_subject TEXT;
+    ALTER TABLE outreach ADD COLUMN approved_body TEXT;
+
+    CREATE TABLE email_deliveries (
+      id TEXT PRIMARY KEY,
+      outreach_id INTEGER REFERENCES outreach(id),
+      kind TEXT NOT NULL CHECK (kind IN ('OUTREACH', 'TEST')),
+      from_email TEXT NOT NULL,
+      to_email TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'PREPARING'
+        CHECK (status IN ('PREPARING', 'SENDING', 'SENT', 'FAILED', 'UNCERTAIN')),
+      gmail_message_id TEXT,
+      gmail_thread_id TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      finished_at TEXT,
+      CHECK ((kind = 'OUTREACH' AND outreach_id IS NOT NULL)
+        OR (kind = 'TEST' AND outreach_id IS NULL)),
+      CHECK (status != 'SENT' OR (gmail_message_id IS NOT NULL AND gmail_thread_id IS NOT NULL))
+    ) STRICT;
+    CREATE INDEX email_deliveries_created_idx ON email_deliveries(created_at DESC);
+    CREATE UNIQUE INDEX email_deliveries_outreach_guard_idx ON email_deliveries(outreach_id)
+      WHERE outreach_id IS NOT NULL AND status IN ('PREPARING', 'SENDING', 'SENT', 'UNCERTAIN');
+
+    DROP TRIGGER outreach_status_transition;
+    CREATE TRIGGER outreach_status_transition
+    BEFORE UPDATE OF status ON outreach
+    WHEN NOT (
+      OLD.status = NEW.status
+      OR (OLD.status = 'DRAFT' AND NEW.status IN ('APPROVED', 'REJECTED'))
+      OR (OLD.status = 'APPROVED' AND NEW.status IN ('READY_TO_SEND', 'DRAFT'))
+      OR (OLD.status = 'READY_TO_SEND' AND NEW.status IN ('SENT', 'DRAFT'))
+      OR (OLD.status = 'SENT' AND NEW.status = 'REPLIED')
+    )
+    BEGIN SELECT RAISE(ABORT, 'invalid outreach status transition'); END;
+  `,
 ];

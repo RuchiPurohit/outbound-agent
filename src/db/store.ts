@@ -1,7 +1,8 @@
 import type { SqliteDatabase } from "./database.js";
+import { randomUUID } from "node:crypto";
 import type {
   Campaign, CampaignStatus, Company, Contact, EmailStatus, Outreach, ResearchRecord,
-  ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch,
+  ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch, EmailDelivery,
 } from "./types.js";
 
 type Row = Record<string, unknown>;
@@ -339,7 +340,9 @@ export class OutboundStore {
     const draft = this.requireOutreach(id);
     this.requireDraftEvidence(draft.contactId, draft.researchId ?? undefined);
     this.transitionOutreach(id, "DRAFT", "APPROVED");
-    this.db.prepare("UPDATE outreach SET reviewed_at = ? WHERE id = ?").run(now(), id);
+    this.db.prepare(`UPDATE outreach
+      SET reviewed_at = ?, approved_recipient = ?, approved_subject = ?, approved_body = ? WHERE id = ?`)
+      .run(now(), this.requireContact(draft.contactId).email, draft.subject, draft.body, id);
     return this.getOutreach(id)!;
   }
 
@@ -374,6 +377,106 @@ export class OutboundStore {
 
   markOutreachReplied(id: number): Outreach {
     return this.transitionOutreach(id, "SENT", "REPLIED");
+  }
+
+  assertReadyToSend(id: number): Outreach {
+    const draft = this.requireOutreach(id);
+    if (draft.status !== "READY_TO_SEND") throw new WorkflowError("Only READY_TO_SEND emails can be sent");
+    this.requireDraftEvidence(draft.contactId, draft.researchId ?? undefined);
+    this.assertContactLimit(draft.contactId);
+    const contact = this.requireContact(draft.contactId);
+    if (!draft.reviewedAt || draft.approvedRecipient !== contact.email
+      || draft.approvedSubject !== draft.subject || draft.approvedBody !== draft.body) {
+      throw new WorkflowError("Recipient or content is not covered by the saved approval. Return to draft and approve again.");
+    }
+    return draft;
+  }
+
+  withdrawOutreachApproval(id: number): Outreach {
+    return this.db.transaction(() => {
+      const draft = this.requireOutreach(id);
+      if (draft.status !== "READY_TO_SEND" && draft.status !== "APPROVED") {
+        throw new WorkflowError("Only unsent approved emails can return to draft");
+      }
+      if (this.listEmailDeliveries().some((delivery) => delivery.outreachId === id && delivery.status !== "FAILED")) {
+        throw new WorkflowError("Cannot change an email while delivery is active, sent, or uncertain");
+      }
+      this.db.prepare(`UPDATE outreach SET status = 'DRAFT', reviewed_at = NULL,
+        approved_recipient = NULL, approved_subject = NULL, approved_body = NULL WHERE id = ?`).run(id);
+      return this.getOutreach(id)!;
+    })();
+  }
+
+  beginEmailDelivery(input: {
+    id?: string; outreachId?: number; kind: EmailDelivery["kind"];
+    fromEmail: string; toEmail: string; subject: string; body: string;
+  }): EmailDelivery {
+    return this.db.transaction(() => {
+      const id = input.id ?? randomUUID();
+      if (this.getEmailDelivery(id)) throw new WorkflowError("This send request has already been submitted");
+      if (input.kind === "OUTREACH") {
+        if (input.outreachId === undefined) throw new WorkflowError("Outreach ID is required");
+        const draft = this.assertReadyToSend(input.outreachId);
+        if (draft.approvedRecipient !== input.toEmail || draft.subject !== input.subject || draft.body !== input.body) {
+          throw new WorkflowError("Send content must exactly match the approved email");
+        }
+        if (this.listEmailDeliveries().some((delivery) => delivery.outreachId === input.outreachId
+          && delivery.status !== "FAILED")) throw new WorkflowError("This email is already sending, sent, or uncertain; sending again is blocked");
+      } else if (input.outreachId !== undefined) {
+        throw new WorkflowError("Test emails cannot be attached to prospect outreach");
+      }
+      this.db.prepare(`INSERT INTO email_deliveries
+        (id, outreach_id, kind, from_email, to_email, subject, body, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'PREPARING', ?)`)
+        .run(id, input.outreachId ?? null, input.kind, input.fromEmail, input.toEmail, input.subject, input.body, now());
+      return this.getEmailDelivery(id)!;
+    })();
+  }
+
+  getEmailDelivery(id: string): EmailDelivery | undefined {
+    const row = this.db.prepare("SELECT * FROM email_deliveries WHERE id = ?").get(id) as Row | undefined;
+    return row ? emailDeliveryFromRow(row) : undefined;
+  }
+
+  listEmailDeliveries(): EmailDelivery[] {
+    return (this.db.prepare("SELECT * FROM email_deliveries ORDER BY created_at DESC, rowid DESC")
+      .all() as Row[]).map(emailDeliveryFromRow);
+  }
+
+  markDeliverySending(id: string): void {
+    const changed = this.db.prepare("UPDATE email_deliveries SET status = 'SENDING' WHERE id = ? AND status = 'PREPARING'")
+      .run(id).changes;
+    if (!changed) throw new WorkflowError("Only a new send attempt may be dispatched");
+  }
+
+  completeEmailDelivery(id: string, result: { messageId: string; threadId: string }): EmailDelivery {
+    return this.db.transaction(() => {
+      const delivery = this.getEmailDelivery(id);
+      if (!delivery || !["SENDING", "UNCERTAIN"].includes(delivery.status)) {
+        throw new WorkflowError("Send attempt is not awaiting a Gmail result");
+      }
+      if (!result.messageId || !result.threadId) throw new WorkflowError("Gmail must confirm message and thread IDs");
+      const sentAt = now();
+      this.db.prepare(`UPDATE email_deliveries SET status = 'SENT', gmail_message_id = ?, gmail_thread_id = ?,
+        finished_at = ?, error = NULL WHERE id = ?`).run(result.messageId, result.threadId, sentAt, id);
+      if (delivery.outreachId !== null) {
+        // Record what Gmail actually accepted; do not re-check approvals after dispatch.
+        this.db.prepare("UPDATE outreach SET status = 'SENT', sent_at = ?, gmail_thread_id = ? WHERE id = ?")
+          .run(sentAt, result.threadId, delivery.outreachId);
+      }
+      return this.getEmailDelivery(id)!;
+    })();
+  }
+
+  failEmailDelivery(id: string, status: "FAILED" | "UNCERTAIN", error: string): void {
+    this.db.prepare(`UPDATE email_deliveries SET status = ?, error = ?, finished_at = ?
+      WHERE id = ? AND status IN ('PREPARING', 'SENDING')`).run(status, error, now(), id);
+  }
+
+  recoverInterruptedDeliveries(): number {
+    return this.db.prepare(`UPDATE email_deliveries SET status = 'UNCERTAIN',
+      error = 'Dashboard stopped during delivery. Check Gmail Sent before taking further action.', finished_at = ?
+      WHERE status IN ('PREPARING', 'SENDING')`).run(now()).changes;
   }
 
   createWorkflowRun(input: {
@@ -567,7 +670,19 @@ function outreachFromRow(row: Row): Outreach {
   return { id: integer(row, "id"), contactId: integer(row, "contact_id"), subject: text(row, "subject"),
     body: text(row, "body"), status: text(row, "status") as Outreach["status"],
     sentAt: nullableText(row, "sent_at"), gmailThreadId: nullableText(row, "gmail_thread_id"),
-    researchId: nullableInteger(row, "research_id"), reviewedAt: nullableText(row, "reviewed_at") };
+    researchId: nullableInteger(row, "research_id"), reviewedAt: nullableText(row, "reviewed_at"),
+    approvedRecipient: nullableText(row, "approved_recipient"), approvedSubject: nullableText(row, "approved_subject"),
+    approvedBody: nullableText(row, "approved_body") };
+}
+function emailDeliveryFromRow(row: Row): EmailDelivery {
+  return {
+    id: text(row, "id"), outreachId: nullableInteger(row, "outreach_id"),
+    kind: text(row, "kind") as EmailDelivery["kind"], fromEmail: text(row, "from_email"),
+    toEmail: text(row, "to_email"), subject: text(row, "subject"), body: text(row, "body"),
+    status: text(row, "status") as EmailDelivery["status"], gmailMessageId: nullableText(row, "gmail_message_id"),
+    gmailThreadId: nullableText(row, "gmail_thread_id"), error: nullableText(row, "error"),
+    createdAt: text(row, "created_at"), finishedAt: nullableText(row, "finished_at"),
+  };
 }
 function workflowRunFromRow(row: Row): WorkflowRun {
   return {

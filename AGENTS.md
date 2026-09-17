@@ -170,3 +170,9 @@ outreach stays DRAFT; only an explicit human dashboard review may approve it.
 Never invoke approval operations from a research or generation workflow.
 Research must stop for checklist selection. Generate first-touch drafts only
 for the contact IDs explicitly checked in the dashboard generation request.
+
+Gmail sending is a deterministic dashboard operation, never a research task.
+Only an explicit human send confirmation may dispatch READY_TO_SEND outreach.
+Never read .env, Gmail OAuth credentials, or tokens during research/generation.
+Never invoke sending, approval withdrawal, or delivery-state operations from
+a research, generation, or rewrite workflow.

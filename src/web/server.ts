@@ -1,17 +1,37 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { dirname, join } from "node:path";
+import { config } from "dotenv";
 import { openDatabase } from "../db/database.js";
 import { OutboundStore, WorkflowError } from "../db/store.js";
 import type { Campaign, ResearchRecord, WorkflowRun } from "../db/types.js";
 import { launchWorkflow } from "../workflows/runner.js";
 import { renderEmailResults } from "./emailResults.js";
 import { renderProspectStages } from "./prospectStages.js";
+import { FileTokenStore, GmailClient } from "../gmail/client.js";
+import { GmailSending } from "../gmail/sending.js";
+import { renderGmailSettings } from "./gmailSettings.js";
 
+config({ quiet: true });
 const databasePath = process.env.OUTBOUND_DB_PATH ?? "data/outbound.sqlite";
 const host = "127.0.0.1";
 const port = Number(process.env.OUTBOUND_PORT ?? 3000);
 const db = openDatabase(databasePath);
 const store = new OutboundStore(db);
 const interrupted = store.failInterruptedWorkflowRuns();
+const interruptedDeliveries = store.recoverInterruptedDeliveries();
+const appOrigin = `http://${host}:${port}`;
+const csrfToken = randomBytes(32).toString("hex");
+const expectedSender = process.env.GMAIL_SENDER_EMAIL ?? "aiwithruchi@gmail.com";
+const redirectUri = process.env.GMAIL_REDIRECT_URI ?? `${appOrigin}/gmail/callback`;
+const gmail = new GmailClient({ clientId: process.env.GOOGLE_CLIENT_ID ?? "",
+  clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "", redirectUri, expectedSender,
+}, new FileTokenStore(join(dirname(databasePath), "gmail-oauth.json")));
+const gmailSending = new GmailSending(store, gmail);
+const signature = (...values: unknown[]): string => createHmac("sha256", csrfToken)
+  .update(JSON.stringify(values)).digest("hex");
+const validSignature = (actual: string | null, expected: string): boolean =>
+  !!actual && /^[a-f0-9]{64}$/.test(actual) && timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
 
 const escapeHtml = (value: unknown): string => String(value ?? "")
   .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -21,6 +41,8 @@ const humanize = (value: string): string => value.toLowerCase().replaceAll("_", 
   .replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
 
 function layout(title: string, body: string, options: { refreshing?: boolean } = {}): string {
+  body = body.replace(/<form\b[^>]*method="post"[^>]*>/g,
+    (form) => `${form}<input type="hidden" name="csrfToken" value="${csrfToken}">`);
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)} · Outbound</title>${options.refreshing ? '<meta http-equiv="refresh" content="3">' : ""}
@@ -30,7 +52,8 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
 @media(max-width:800px){.email-results th:nth-child(5),.email-results td:nth-child(5){display:table-cell}}
 .email-preview{background:white;color:var(--ink);border:1px solid var(--line);font-family:inherit;font-size:15px;line-height:1.6;max-height:none}
 .badge.READY_TO_SEND{background:var(--green2);color:var(--green)}
-</style></head><body><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><span class="badge">Local SQLite</span></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
+.badge.SENT{background:var(--green2);color:var(--green)}.badge.UNCERTAIN,.badge.SENDING,.badge.PREPARING{background:#f2e5c9;color:var(--amber)}
+</style></head><body><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/gmail">Gmail</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
 <script>document.querySelectorAll('[data-select]').forEach(function(b){b.addEventListener('click',function(){b.closest('form').querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function(c){c.checked=true})})})</script></body></html>`;
 }
 
@@ -50,7 +73,9 @@ async function formData(request: IncomingMessage): Promise<URLSearchParams> {
     body += chunk;
     if (body.length > 100_000) throw new WorkflowError("Form submission is too large");
   }
-  return new URLSearchParams(body);
+  const form = new URLSearchParams(body);
+  if (form.get("csrfToken") !== csrfToken) throw new WorkflowError("Form expired or could not be verified. Refresh the page and try again.");
+  return form;
 }
 
 function requirePositiveId(value: string | null, label: string): number {
@@ -118,6 +143,64 @@ function campaignPage(campaign: Campaign, url: URL): string {
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${host}:${port}`);
+  if (request.headers.host !== `${host}:${port}`
+    || (request.method === "POST" && request.headers.origin && request.headers.origin !== appOrigin)) {
+    send(response, 403, layout("Forbidden", '<div class="notice error">Use the local dashboard URL printed in your terminal. Cross-origin requests are not allowed.</div>')); return;
+  }
+  if (request.method === "GET" && url.pathname === "/gmail") {
+    send(response, 200, layout("Gmail", notices(url) + renderGmailSettings(gmail, store, {
+      recipient: process.env.GMAIL_TEST_RECIPIENT ?? "abstract.ruch@gmail.com", expectedSender,
+      signTest: (id, sender) => signature("test", id, sender),
+    }))); return;
+  }
+  if (request.method === "POST" && ["/gmail/connect", "/gmail/disconnect", "/gmail/test"].includes(url.pathname)) {
+    const form = await formData(request);
+    if (store.listEmailDeliveries().some(({ status }) => status === "PREPARING" || status === "SENDING")) {
+      throw new WorkflowError("Wait for active delivery to finish before changing Gmail or sending another test");
+    }
+    if (url.pathname === "/gmail/connect") {
+      if (redirectUri !== `${appOrigin}/gmail/callback`) throw new WorkflowError("GMAIL_REDIRECT_URI must match the current dashboard origin and /gmail/callback path.");
+      const authorization = gmail.beginAuthorization();
+      response.setHeader("Set-Cookie", `gmail_oauth_state=${authorization.state}; HttpOnly; SameSite=Lax; Max-Age=600; Path=/gmail/callback`);
+      redirect(response, authorization.url); return;
+    }
+    if (url.pathname === "/gmail/disconnect") {
+      await gmail.disconnect();
+      redirect(response, "/gmail", { notice: "Gmail access revoked and local credentials removed" }); return;
+    }
+    const sender = gmail.connectedEmail();
+    const requestId = form.get("requestId") ?? "";
+    if (!sender || !validSignature(form.get("testSignature"), signature("test", requestId, sender))
+      || form.get("confirm") !== "yes") throw new WorkflowError("Review the test message and explicitly confirm sending it");
+    const delivery = await gmailSending.sendTest(form.get("recipient")?.trim() ?? "", requestId, sender);
+    redirect(response, "/gmail", { notice: `Test email sent to ${delivery.toEmail}. Gmail message ${delivery.gmailMessageId}.` }); return;
+  }
+  if (request.method === "GET" && url.pathname === "/gmail/callback") {
+    response.setHeader("Set-Cookie", "gmail_oauth_state=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/gmail/callback");
+    if (url.searchParams.get("error")) {
+      redirect(response, "/gmail", { error: "Google authorization was not completed. No email was sent." }); return;
+    }
+    const cookieState = request.headers.cookie?.match(/(?:^|;\s*)gmail_oauth_state=([^;]*)/)?.[1] ?? "";
+    try {
+      const email = await gmail.finishAuthorization(url.searchParams.get("code") ?? "", url.searchParams.get("state") ?? "", cookieState);
+      redirect(response, "/gmail", { notice: `Connected ${email}. Review and send the test message below.` }); return;
+    } catch (error) { redirect(response, "/gmail", { error: messageOf(error) }); return; }
+  }
+
+  const sendPreview = url.pathname.match(/^\/campaigns\/(\d+)\/outreach\/(\d+)\/send$/);
+  if (request.method === "GET" && sendPreview) {
+    const campaignId = Number(sendPreview[1]);
+    const id = Number(sendPreview[2]);
+    const draft = store.assertReadyToSend(id);
+    const contact = store.getContact(draft.contactId)!;
+    if (store.getCompany(contact.companyId)?.campaignId !== campaignId) throw new WorkflowError("Email does not belong to this campaign");
+    const sender = gmail.connectedEmail();
+    if (!sender) { redirect(response, "/gmail", { error: "Connect Gmail before sending approved emails" }); return; }
+    const blocked = store.listEmailDeliveries().find((delivery) => delivery.outreachId === id && delivery.status !== "FAILED");
+    if (blocked) throw new WorkflowError("Delivery is already active, sent, or uncertain. Do not resend.");
+    const expected = { fromEmail: sender, toEmail: contact.email!, subject: draft.subject, body: draft.body };
+    send(response, 200, layout("Confirm send", `<a href="/campaigns/${campaignId}#draft-review">← Emails</a><section class="card" style="margin-top:18px"><h1>Confirm sending</h1><p><strong>From:</strong> ${escapeHtml(sender)}<br><strong>To:</strong> ${escapeHtml(contact.email)}<br><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p><pre class="email-preview">${escapeHtml(draft.body)}</pre><div class="notice">This sends a real email to this prospect. Sending cannot be undone by this dashboard.</div><form method="post" action="/campaigns/${campaignId}/outreach/${id}/send"><input type="hidden" name="sendSignature" value="${signature("outreach", id, expected)}"><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending this exact approved email to the recipient above.</label><button>Send email now</button></form></section>`)); return;
+  }
   if (request.method === "GET" && url.pathname === "/") {
     send(response, 200, dashboardPage(url)); return;
   }
@@ -154,7 +237,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (!store.getCampaign(campaignId)) throw new WorkflowError("Campaign not found");
     const form = await formData(request);
 
-    const draftAction = action.match(/^outreach\/(\d+)\/(review|rewrite)$/);
+    const draftAction = action.match(/^outreach\/(\d+)\/(review|rewrite|restore|send)$/);
     if (draftAction) {
       const outreachId = Number(draftAction[1]);
       const draft = store.getOutreach(outreachId);
@@ -165,6 +248,21 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }
       if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {
         throw new WorkflowError("Wait for the active workflow to finish before reviewing drafts");
+      }
+      if (draftAction[2] === "send") {
+        const sender = gmail.connectedEmail();
+        const current = store.assertReadyToSend(outreachId);
+        const expected = { fromEmail: sender ?? "", toEmail: contact!.email!, subject: current.subject, body: current.body };
+        if (!sender || form.get("confirm") !== "yes"
+          || !validSignature(form.get("sendSignature"), signature("outreach", outreachId, expected))) {
+          throw new WorkflowError("Send confirmation expired or recipient/content changed. Review the email and confirm sending again.");
+        }
+        const delivery = await gmailSending.sendApproved(outreachId, expected);
+        redirect(response, `/campaigns/${campaignId}`, { notice: `Email sent to ${delivery.toEmail}. Gmail message ${delivery.gmailMessageId}.` }); return;
+      }
+      if (draftAction[2] === "restore") {
+        store.withdrawOutreachApproval(outreachId);
+        redirect(response, `/campaigns/${campaignId}`, { notice: "Returned to DRAFT for a fresh human review. Nothing was sent." }); return;
       }
       if (draftAction[2] === "rewrite") {
         const feedback = form.get("feedback")?.trim() ?? "";
@@ -234,7 +332,7 @@ const server = createServer((request, response) => {
   handle(request, response).catch((error) => {
     const campaignId = request.url?.match(/^\/campaigns\/(\d+)/)?.[1];
     if (request.method === "POST") {
-      redirect(response, campaignId ? `/campaigns/${campaignId}` : "/", { error: messageOf(error) });
+      redirect(response, campaignId ? `/campaigns/${campaignId}` : request.url?.startsWith("/gmail") ? "/gmail" : "/", { error: messageOf(error) });
     } else {
       send(response, error instanceof WorkflowError ? 400 : 500,
         layout("Error", `<div class="notice error">${escapeHtml(messageOf(error))}</div><a href="/">Return to campaigns</a>`));
@@ -246,6 +344,7 @@ server.listen(port, host, () => {
   console.log(`Outbound dashboard: http://${host}:${port}`);
   console.log(`SQLite database: ${databasePath}`);
   if (interrupted) console.log(`Marked ${interrupted} interrupted workflow run(s) as failed.`);
+  if (interruptedDeliveries) console.log(`Blocked ${interruptedDeliveries} interrupted send(s) as uncertain. Check Gmail Sent.`);
 });
 
 function shutDown(): void {

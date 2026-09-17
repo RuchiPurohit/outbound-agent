@@ -24,7 +24,8 @@
   "license": "ISC",
   "description": "Local, human-in-the-loop outbound sales workflow",
   "dependencies": {
-    "better-sqlite3": "^12.11.1"
+    "better-sqlite3": "^12.11.1",
+    "dotenv": "^17.4.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
