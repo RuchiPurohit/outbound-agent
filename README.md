@@ -92,6 +92,11 @@ the installed Codex CLI and the same local SQLite database as the CLI commands.
 Set `OUTBOUND_PORT` to use a different port or `OUTBOUND_DB_PATH` to use a
 different SQLite file.
 
+Company discovery also checks whether chat or user-to-user messaging is already
+a public product feature. The company table shows **Yes** with supporting
+evidence, **No public evidence**, or **Unknown**. “No public evidence” is not a
+claim that the feature is absent.
+
 ### Prospect research, drafting, and review
 
 After email discovery, the dashboard automatically researches approved
