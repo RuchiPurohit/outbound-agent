@@ -93,6 +93,12 @@ that chat could improve engagement is also an automatic qualifier; persist the
 observed evidence and keep the benefit explicitly hypothetical. Products where
 messaging/realtime collaboration is already mature core IP remain a negative.
 
+`docs/PRODUCT.md` is the owner-confirmed internal source for ConvoKit's current
+capabilities. Company discovery should prioritize the segments, channel
+partners, sourcing channels, and ranking factors in `docs/ICP.md`. Public jobs
+and community posts are leads only: verify company identity and affiliation
+before persistence and never contact posters during research.
+
 If something cannot be verified, mark it UNKNOWN.
 
 ## Email discovery

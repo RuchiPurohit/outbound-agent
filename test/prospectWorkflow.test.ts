@@ -253,9 +253,13 @@ describe("Prospect workflow", () => {
     assert.match(generation, /first-party sources/);
     assert.match(generation, /one first-touch draft, not follow-ups/);
     assert.match(generation, /at least MEDIUM fit/);
+    assert.match(generation, /docs\/PRODUCT.md/);
     const discovery = buildPrompt({ campaignId: 2, kind: "COMPANY_DISCOVERY", targetCount: 5 });
     assert.match(discovery, /automatically qualify/);
     assert.match(discovery, /engagement benefit as a hypothesis/);
+    assert.match(discovery, /seed-to-Series-A teams with fewer than 20 engineers/);
+    assert.match(discovery, /public jobs and community complaints only as leads/);
+    assert.match(discovery, /docs\/PRODUCT.md/);
     assert.match(discovery, /never fill the quota with low-fit candidates/);
   });
 });

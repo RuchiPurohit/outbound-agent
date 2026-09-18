@@ -18,7 +18,8 @@ Never expand the selection to other eligible prospects.
    and relevance. Reference the strongest verified signal in the email body.
 5. Apply the qualification and prospect-type rules in `docs/EMAIL_RULES.md`.
    Re-check the workflow using current first-party sources and verify every
-   mentioned ConvoKit capability against convokit.app or convokit.app/docs.
+   mentioned ConvoKit capability against docs/PRODUCT.md, convokit.app, or
+   convokit.app/docs.
    Sourced comments, forums, support discussions, or collaboration features and
    sourced product-specific chat engagement hypotheses are automatic qualifiers:
    treat them as at least MEDIUM fit and create a conditional Type B draft. Do

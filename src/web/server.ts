@@ -45,6 +45,8 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
     (form) => `${form}<input type="hidden" name="csrfToken" value="${csrfToken}">`);
   body = body.replace("<th>Score</th><th>Why ConvoKit</th>",
     "<th>Score</th><th>Chat feature</th><th>Why ConvoKit</th>");
+  body = body.replaceAll('name="targetCount" type="number" min="1" max="25"',
+    'name="targetCount" type="number" min="1" max="30"');
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)} · Outbound</title>${options.refreshing ? '<meta http-equiv="refresh" content="3">' : ""}
@@ -225,7 +227,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const segment = form.get("segment")?.trim() ?? "";
     if (!name || !segment) throw new WorkflowError("Campaign name and segment are required");
     const targetCount = requirePositiveId(form.get("targetCount"), "company target count");
-    if (targetCount > 25) throw new WorkflowError("Company target count cannot exceed 25");
+    if (targetCount > 30) throw new WorkflowError("Company target count cannot exceed 30");
     const campaign = store.createCampaign({ name, segment, status: "ACTIVE" });
     if (form.get("startResearch") === "yes") {
       try {
@@ -298,8 +300,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       if (!kind) throw new WorkflowError("Unknown workflow");
       const targetCount = kind === "COMPANY_DISCOVERY"
         ? requirePositiveId(form.get("targetCount"), "company target count") : undefined;
-      if (targetCount !== undefined && targetCount > 25) {
-        throw new WorkflowError("Company target count cannot exceed 25");
+      if (targetCount !== undefined && targetCount > 30) {
+        throw new WorkflowError("Company target count cannot exceed 30");
       }
       const contactIds = kind === "EMAIL_GENERATION"
         ? form.getAll("contactIds").map((value) => requirePositiveId(value, "selected contact ID")) : undefined;

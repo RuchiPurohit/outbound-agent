@@ -6,9 +6,10 @@ Write like a technical founder emailing a product or engineering leader. The
 goal is to earn a conversation by identifying a legitimate product workflow,
 not to maximize the number of emails drafted.
 
-Before drafting or rewriting, use the latest official ConvoKit website and
-documentation as the source of truth:
+Before drafting or rewriting, use the owner-confirmed product profile and the
+latest official ConvoKit website and documentation as sources of truth:
 
+- docs/PRODUCT.md
 - https://convokit.app
 - https://convokit.app/docs
 

@@ -34,6 +34,45 @@ engagement is also an automatic qualifier when it is anchored to a sourced
 feature, audience, or workflow. Mark the benefit as a hypothesis; do not state
 that improved engagement is proven.
 
+## Targeting and sourcing playbook
+
+Read `docs/PRODUCT.md` for ConvoKit's owner-confirmed product shape and
+capabilities. Start with teams that need chat as a feature rather than as their
+core product. Prefer seed-to-Series-A companies, fewer than 20 engineers, a live
+product, and a desire to own/customize the UI while outsourcing the messaging
+backend. Flutter, React web, and React Native are positive stack signals. Verify
+the prospect's actual stack rather than inferring it from a category or title.
+
+Search the priority segments and research channels in `docs/ICP.md`, including
+marketplaces, gig/on-demand, care/coaching, education, fitness/habits, property,
+dating/community, mobile agencies, and low-code builders. Recent YC batches,
+recent Product Hunt launches, relevant Vancouver cohorts, public implementation
+jobs, and attributable developer/community complaints are candidate sources.
+
+A public job or community post is only a lead. Store it only after verifying the
+company identity, domain, product, affiliation, date, and ICP fit. Never contact
+or reply to the source during discovery. Do not invent a company from an
+anonymous post.
+
+The user confirms custom UI, hosted conversation APIs, participant access,
+realtime delivery, Flutter, React web, React Native, webhooks, and audit trails
+in `docs/PRODUCT.md`. HabitYou, partner pricing, customer/reference status,
+compliance certifications, and other capabilities still require a current
+authoritative source before making a claim.
+
+Rank qualified companies using these factors:
+
+1. Strength of the concrete messaging workflow or automatic qualifier.
+2. Seed-to-Series-A stage and fewer than 20 engineers.
+3. Flutter, React web, or React Native.
+4. Product is live with users.
+5. Chat is homegrown, limited, external, or missing rather than the core product.
+6. A timely build/buy signal such as a launch, implementation job, or attributable
+   competitor/pricing complaint.
+
+Respect the dashboard's requested result count. Never weaken verification or
+pad the list to reach a quota.
+
 Rules:
 
 - Important claims must have a public source URL.
