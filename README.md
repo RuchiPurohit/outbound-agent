@@ -97,6 +97,15 @@ a public product feature. The company table shows **Yes** with supporting
 evidence, **No public evidence**, or **Unknown**. “No public evidence” is not a
 claim that the feature is absent.
 
+Newly discovered companies also show a separate chat implementation assessment
+(`HOMEGROWN`, `VENDOR`, `EXTERNAL`, `NONE_FOUND`, or `UNKNOWN`), a sourced total
+headcount or range, a persisted sales thesis, and a six-factor score breakdown.
+Engineering headcount remains **Unknown** unless independently sourced.
+Existing companies retain their historical scores; new evidence fields start
+unknown until researched. The [ICP](docs/ICP.md) owns the qualification paths,
+geography rule, exclusions, and 100-point rubric; the discovery runbook describes
+how to apply them and report candidates that did not qualify.
+
 ### Prospect research, drafting, and review
 
 After email discovery, the dashboard automatically researches approved

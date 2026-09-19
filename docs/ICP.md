@@ -34,7 +34,8 @@ Company size:
 
 20-200 employees
 
-Prefer seed through Series A companies and teams with fewer than 20 engineers.
+Prefer seed through Series A companies. Engineering headcount is `UNKNOWN`
+unless a public source states it; never infer it from total headcount.
 Larger companies and enterprises are normally lower priority because their
 procurement and platform requirements favor established enterprise vendors.
 
@@ -63,7 +64,7 @@ Prioritize companies that:
 - have communities
 - have marketplace interactions
 - appear to be building messaging/chat functionality
-- are seed through Series A, already live with users, and have a small engineering team
+- are seed through Series A and already live with users
 - use Flutter, JavaScript/TypeScript, or React on a supported product surface
 - expose a homegrown, limited, externally hosted, or missing chat experience
 - have a current build/buy trigger such as a public chat implementation request
@@ -123,6 +124,54 @@ these ConvoKit theses:
 An automatic qualifier must still be anchored to a sourced product feature,
 audience, or workflow. The possible benefit is a hypothesis, not a verified fact.
 
+An AI assistant does not disqualify a company that independently passes a
+human-to-human messaging path or the sourced automatic-qualifier path above.
+Human-to-AI chat by itself is not evidence of human-to-human messaging.
+
+## ICP scoring rubric (100 points)
+
+Apply the qualification gate first, then assign integer points in each range.
+Unknown or unsupported evidence earns zero for that factor. Store the six
+component scores; the total is computed from them, not guessed separately.
+
+| Factor | Points | What earns the upper end |
+| --- | ---: | --- |
+| Messaging workflow fit | 0–30 | Specific, sourced human interaction or strong sourced collaboration surface |
+| Chat implementation opportunity | 0–20 | Sourced homegrown, limited, or external implementation with a credible build/buy angle; `NONE_FOUND` alone earns little |
+| Timely buying signal | 0–15 | Recent sourced launch, implementation request, hiring, or attributable vendor complaint |
+| Team/stage fit | 0–15 | Sourced seed–Series A stage and sourced total headcount aligned with the campaign |
+| Supported stack fit | 0–10 | Sourced Flutter, React web, or React Native implementation |
+| Live-product evidence | 0–10 | Public evidence that real users can use the product now |
+
+Calibration examples (not extra points):
+
+- `workflowFit`: 0 without a sourced product workflow; roughly 5–10 for a
+  sourced comment surface or product-specific engagement hypothesis without
+  named participants; 15–20 for named human roles and a concrete object; 25–30
+  for a directly evidenced human-to-human messaging workflow relevant to ConvoKit.
+- `chatImplementation`: 0 for `UNKNOWN` or `NONE_FOUND` alone; roughly 5–10
+  for a documented vendor or external channel with a specific limitation;
+  15–20 for a sourced homegrown implementation with a credible maintenance or
+  expansion burden. Do not infer homegrown from appearance alone.
+- `timingSignal`: 0 without a dated signal; roughly 5 for relevant hiring,
+  10 for a recent workflow launch, and 15 for a current sourced request to
+  build messaging. A recent date without messaging relevance earns little.
+- `teamFit`: 0 if stage and headcount are unsupported; roughly 7 when only one
+  is sourced and aligned; up to 15 when both are sourced and fit the segment.
+
+Use the remaining stack and live-product ranges as stated in the table. Explain
+borderline scores in the company report; do not double-count one source as
+proof of unrelated factors.
+
+Do not treat `NONE_FOUND` chat implementation as proof that a company has no
+chat. A generic engagement hypothesis may qualify under the gate above, but
+earns few workflow-fit points until the interaction is made concrete.
+
+Geography is an eligibility filter: use the campaign segment when it explicitly
+overrides location; otherwise require United States or Canada. Record the
+location and its source. Do not add hidden geographic score points or assume
+Vancouver/Pacific-time preference unless requested for a campaign.
+
 ## Negative signals
 
 Deprioritize:
@@ -134,12 +183,19 @@ Deprioritize:
 
 Exclude entirely:
 
-- AI assistants, copilots, chatbots, or human-to-AI chat when no separate,
-  verified human-to-human messaging use case exists
+- AI assistants, copilots, chatbots, or human-to-AI chat when no separate
+  human-to-human or sourced automatic-qualifier path exists
 - products where messaging, chat, or realtime collaboration is already the
   mature core product or clear core IP
 - prospects that require unverified ConvoKit capabilities, including AI-agent
   orchestration
+
+Use a concrete core-IP test: inspect the homepage headline and primary pricing
+page. Exclude when they sell messaging, community, or collaboration itself as
+the primary product and there is no distinct non-messaging workflow ConvoKit
+would support. A marketplace or community app that uses messaging as one
+feature is not excluded merely because its homepage mentions communication.
+Record the exclusion reason and source in the discovery report.
 
 ## Target roles
 
