@@ -24,8 +24,12 @@ describe("OutboundStore", () => {
       name: "Example Co",
       domain: "example.com",
       location: "Canada",
+      locationSourceUrl: "https://example.com/about",
       employeeCount: 80,
-      score: 75,
+      employeeCountSourceUrl: "https://example.com/about",
+      scoreBreakdown: { workflowFit: 25, chatImplementation: 15, timingSignal: 10,
+        teamFit: 10, stackFit: 7, liveProduct: 8 },
+      salesThesis: "Sourced collaboration may create a messaging opportunity.",
       reason: "Has user-to-user collaboration",
     });
     return { campaign, company };
@@ -68,6 +72,49 @@ describe("OutboundStore", () => {
       chatFeatureSourceUrl: "https://contradiction.test/chat" }), /only be stored/);
   });
 
+  it("stores a sourced implementation, thesis, headcount range, and computed rubric", () => {
+    const campaign = store.createCampaign({ name: "Qualified", segment: "Canada" });
+    const breakdown = { workflowFit: 26, chatImplementation: 16, timingSignal: 8,
+      teamFit: 11, stackFit: 10, liveProduct: 9 };
+    const company = store.createCompany({ campaignId: campaign.id, name: "Buyer Seller",
+      domain: "buyerseller.test", location: "Vancouver, Canada",
+      locationSourceUrl: "https://buyerseller.test/about",
+      employeeCountRange: "11–50", employeeCountSourceUrl: "https://example.com/company/buyerseller",
+      chatFeatureStatus: "PRESENT", chatFeatureSourceUrl: "https://buyerseller.test/help/messages",
+      chatImplementation: "VENDOR", chatVendorName: "ExampleVendor",
+      chatImplementationSourceUrl: "https://buyerseller.test/help/chat-provider",
+      salesThesis: "Buyer and seller messages around listings may create backend maintenance work.",
+      scoreBreakdown: breakdown });
+    assert.equal(company.score, 80);
+    assert.deepEqual(company.scoreBreakdown, breakdown);
+    assert.equal(company.chatVendorName, "ExampleVendor");
+    assert.equal(company.employeeCountRange, "11–50");
+    assert.match(company.salesThesis!, /Buyer and seller/);
+
+    assert.throws(() => store.createCompany({ campaignId: campaign.id, name: "Unsupported count",
+      domain: "badcount.test", employeeCount: 40 }), /source URL/);
+    assert.throws(() => store.createCompany({ campaignId: campaign.id, name: "Unsupported location",
+      domain: "badlocation.test", location: "Canada" }), /source URL/);
+    assert.throws(() => store.createCompany({ campaignId: campaign.id, name: "Nameless vendor",
+      domain: "badvendor.test", chatImplementation: "VENDOR",
+      chatImplementationSourceUrl: "https://badvendor.test/chat" }), /named vendor/);
+    assert.throws(() => store.createCompany({ campaignId: campaign.id, name: "Speculative homegrown",
+      domain: "badbuild.test", chatImplementation: "HOMEGROWN" }), /source URL/);
+    assert.throws(() => store.createCompany({ campaignId: campaign.id, name: "Invalid score",
+      domain: "badscore.test", salesThesis: "Test thesis",
+      scoreBreakdown: { ...breakdown, workflowFit: 31 } }), /workflowFit score/);
+    assert.throws(() => store.createCompany({ campaignId: campaign.id, name: "Mismatched score",
+      domain: "mismatch.test", score: 90, salesThesis: "Test thesis",
+      scoreBreakdown: breakdown }), /must equal/);
+    assert.throws(() => store.createCompany({ campaignId: campaign.id, name: "Unweighted score",
+      domain: "unweighted.test", score: 70 }), /scoreBreakdown/);
+    assert.throws(() => store.createCompany({ campaignId: campaign.id, name: "Thesis missing",
+      domain: "thesismissing.test", scoreBreakdown: breakdown }), /sales thesis/);
+    assert.throws(() => store.createCompany({ campaignId: campaign.id, name: "Bad headcount link",
+      domain: "badlink.test", employeeCountRange: "11–50",
+      employeeCountSourceUrl: "not a URL" }), /HTTP\(S\) URL/);
+  });
+
   it("persists records after reopening the SQLite file", () => {
     const directory = mkdtempSync(join(tmpdir(), "outbound-store-"));
     const filename = join(directory, "outbound.sqlite");
@@ -76,7 +123,7 @@ describe("OutboundStore", () => {
     diskDb.close();
     const reopenedDb = openDatabase(filename);
     assert.equal(new OutboundStore(reopenedDb).getCampaign(campaign.id)?.name, "Disk campaign");
-    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 7);
+    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 8);
     reopenedDb.close();
     rmSync(directory, { recursive: true });
   });

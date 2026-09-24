@@ -323,4 +323,18 @@ export const migrations: readonly string[] = [
       CHECK (chat_feature_status IN ('PRESENT', 'NO_PUBLIC_EVIDENCE', 'UNKNOWN'));
     ALTER TABLE companies ADD COLUMN chat_feature_source_url TEXT;
   `,
+  `
+    ALTER TABLE companies ADD COLUMN employee_count_range TEXT;
+    ALTER TABLE companies ADD COLUMN employee_count_source_url TEXT;
+    ALTER TABLE companies ADD COLUMN engineering_headcount INTEGER
+      CHECK (engineering_headcount IS NULL OR engineering_headcount >= 0);
+    ALTER TABLE companies ADD COLUMN engineering_headcount_source_url TEXT;
+    ALTER TABLE companies ADD COLUMN location_source_url TEXT;
+    ALTER TABLE companies ADD COLUMN score_breakdown TEXT;
+    ALTER TABLE companies ADD COLUMN sales_thesis TEXT;
+    ALTER TABLE companies ADD COLUMN chat_implementation TEXT NOT NULL DEFAULT 'UNKNOWN'
+      CHECK (chat_implementation IN ('HOMEGROWN', 'VENDOR', 'EXTERNAL', 'NONE_FOUND', 'UNKNOWN'));
+    ALTER TABLE companies ADD COLUMN chat_vendor_name TEXT;
+    ALTER TABLE companies ADD COLUMN chat_implementation_source_url TEXT;
+  `,
 ];

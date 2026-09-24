@@ -1,12 +1,41 @@
 import type { SqliteDatabase } from "./database.js";
 import { randomUUID } from "node:crypto";
 import type {
-  Campaign, CampaignStatus, ChatFeatureStatus, Company, Contact, EmailStatus, Outreach, ResearchRecord,
+  Campaign, CampaignStatus, ChatFeatureStatus, ChatImplementation, Company, CompanyScoreBreakdown,
+  Contact, EmailStatus, Outreach, ResearchRecord,
   ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch, EmailDelivery,
 } from "./types.js";
 
 type Row = Record<string, unknown>;
 const now = (): string => new Date().toISOString();
+const scoreLimits: CompanyScoreBreakdown = {
+  workflowFit: 30, chatImplementation: 20, timingSignal: 15,
+  teamFit: 15, stackFit: 10, liveProduct: 10,
+};
+
+function checkedScore(breakdown: CompanyScoreBreakdown): number {
+  const keys = Object.keys(scoreLimits) as Array<keyof CompanyScoreBreakdown>;
+  for (const key of keys) {
+    const value = breakdown[key];
+    if (!Number.isInteger(value) || value < 0 || value > scoreLimits[key]) {
+      throw new WorkflowError(`${key} score must be an integer from 0 to ${scoreLimits[key]}`);
+    }
+  }
+  if (Object.keys(breakdown).length !== keys.length) {
+    throw new WorkflowError("Score breakdown contains an unknown factor");
+  }
+  return keys.reduce((sum, key) => sum + breakdown[key], 0);
+}
+
+function checkPublicUrl(value: string | null, label: string): void {
+  if (!value) return;
+  let parsed: URL;
+  try { parsed = new URL(value); }
+  catch { throw new WorkflowError(`${label} must be a public HTTP(S) URL`); }
+  if (!["https:", "http:"].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) {
+    throw new WorkflowError(`${label} must be a public HTTP(S) URL`);
+  }
+}
 
 export class WorkflowError extends Error {}
 
@@ -40,30 +69,106 @@ export class OutboundStore {
     name: string;
     domain: string;
     location?: string;
+    locationSourceUrl?: string;
     employeeCount?: number;
+    employeeCountRange?: string;
+    employeeCountSourceUrl?: string;
+    engineeringHeadcount?: number;
+    engineeringHeadcountSourceUrl?: string;
     score?: number;
+    scoreBreakdown?: CompanyScoreBreakdown;
     reason?: string;
+    salesThesis?: string;
     chatFeatureStatus?: ChatFeatureStatus;
     chatFeatureSourceUrl?: string;
+    chatImplementation?: ChatImplementation;
+    chatVendorName?: string;
+    chatImplementationSourceUrl?: string;
   }): Company {
     this.requireCampaign(input.campaignId);
     const chatFeatureStatus = input.chatFeatureStatus ?? "UNKNOWN";
     const chatFeatureSourceUrl = input.chatFeatureSourceUrl?.trim() || null;
+    checkPublicUrl(chatFeatureSourceUrl, "Chat feature source");
     if (chatFeatureStatus === "PRESENT" && !chatFeatureSourceUrl) {
       throw new WorkflowError("A public source URL is required when chat is PRESENT");
     }
     if (chatFeatureStatus !== "PRESENT" && chatFeatureSourceUrl) {
       throw new WorkflowError("A chat source URL may only be stored when chat is PRESENT");
     }
+    const employeeCountSourceUrl = input.employeeCountSourceUrl?.trim() || null;
+    const engineeringHeadcountSourceUrl = input.engineeringHeadcountSourceUrl?.trim() || null;
+    const locationSourceUrl = input.locationSourceUrl?.trim() || null;
+    checkPublicUrl(employeeCountSourceUrl, "Headcount source");
+    checkPublicUrl(engineeringHeadcountSourceUrl, "Engineering headcount source");
+    checkPublicUrl(locationSourceUrl, "Location source");
+    if (input.location && !locationSourceUrl) {
+      throw new WorkflowError("A public source URL is required for location");
+    }
+    if (!input.location && locationSourceUrl) {
+      throw new WorkflowError("A location source requires a location");
+    }
+    const employeeCountRange = input.employeeCountRange?.trim() || null;
+    if ((input.employeeCount !== undefined || employeeCountRange) && !employeeCountSourceUrl) {
+      throw new WorkflowError("A source URL is required for employee headcount");
+    }
+    if (employeeCountSourceUrl && input.employeeCount === undefined && !employeeCountRange) {
+      throw new WorkflowError("A headcount source requires a stated count or range");
+    }
+    if (input.employeeCount !== undefined && employeeCountRange) {
+      throw new WorkflowError("Use either a stated headcount or a range, not both");
+    }
+    if (input.engineeringHeadcount !== undefined && !engineeringHeadcountSourceUrl) {
+      throw new WorkflowError("A source URL is required for engineering headcount");
+    }
+    if (input.engineeringHeadcount === undefined && engineeringHeadcountSourceUrl) {
+      throw new WorkflowError("An engineering headcount source requires a stated count");
+    }
+    const chatImplementation = input.chatImplementation ?? "UNKNOWN";
+    const chatVendorName = input.chatVendorName?.trim() || null;
+    const chatImplementationSourceUrl = input.chatImplementationSourceUrl?.trim() || null;
+    checkPublicUrl(chatImplementationSourceUrl, "Chat implementation source");
+    if (chatImplementation === "VENDOR" && (!chatVendorName || !chatImplementationSourceUrl)) {
+      throw new WorkflowError("A named vendor and public source URL are required for VENDOR chat");
+    }
+    if ((chatImplementation === "HOMEGROWN" || chatImplementation === "EXTERNAL")
+      && !chatImplementationSourceUrl) {
+      throw new WorkflowError("A public source URL is required for a known chat implementation");
+    }
+    if (chatImplementation !== "VENDOR" && chatVendorName) {
+      throw new WorkflowError("Chat vendor name is only valid for VENDOR implementation");
+    }
+    if ((chatImplementation === "NONE_FOUND" || chatImplementation === "UNKNOWN")
+      && chatImplementationSourceUrl) {
+      throw new WorkflowError("A chat implementation source is only valid for a known implementation");
+    }
+    if (input.score !== undefined && !input.scoreBreakdown) {
+      throw new WorkflowError("New company scores require a weighted scoreBreakdown");
+    }
+    if (input.scoreBreakdown && !input.salesThesis?.trim()) {
+      throw new WorkflowError("A sales thesis is required with a company score");
+    }
+    const score = input.scoreBreakdown ? checkedScore(input.scoreBreakdown) : null;
+    if (input.scoreBreakdown && input.score !== undefined && input.score !== score) {
+      throw new WorkflowError("Company score must equal its weighted breakdown");
+    }
     const result = this.db.prepare(`
       INSERT INTO companies (
         campaign_id, name, domain, location, employee_count, score, reason,
-        chat_feature_status, chat_feature_source_url, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISCOVERED', ?)
+        chat_feature_status, chat_feature_source_url, employee_count_range,
+        employee_count_source_url, engineering_headcount, engineering_headcount_source_url,
+        location_source_url, score_breakdown, sales_thesis,
+        chat_implementation, chat_vendor_name, chat_implementation_source_url,
+        status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISCOVERED', ?)
     `).run(
       input.campaignId, input.name, input.domain, input.location ?? null,
-      input.employeeCount ?? null, input.score ?? null, input.reason ?? null,
-      chatFeatureStatus, chatFeatureSourceUrl, now(),
+      input.employeeCount ?? null, score, input.reason ?? null,
+      chatFeatureStatus, chatFeatureSourceUrl, employeeCountRange,
+      employeeCountSourceUrl, input.engineeringHeadcount ?? null,
+      engineeringHeadcountSourceUrl, locationSourceUrl,
+      input.scoreBreakdown ? JSON.stringify(input.scoreBreakdown) : null,
+      input.salesThesis?.trim() || null, chatImplementation, chatVendorName,
+      chatImplementationSourceUrl, now(),
     );
     return this.getCompany(Number(result.lastInsertRowid))!;
   }
@@ -662,10 +767,20 @@ function campaignFromRow(row: Row): Campaign {
 function companyFromRow(row: Row): Company {
   return { id: integer(row, "id"), campaignId: integer(row, "campaign_id"), name: text(row, "name"),
     domain: text(row, "domain"), location: nullableText(row, "location"),
+    locationSourceUrl: nullableText(row, "location_source_url"),
     employeeCount: nullableInteger(row, "employee_count"), score: nullableInteger(row, "score"),
+    employeeCountRange: nullableText(row, "employee_count_range"),
+    employeeCountSourceUrl: nullableText(row, "employee_count_source_url"),
+    engineeringHeadcount: nullableInteger(row, "engineering_headcount"),
+    engineeringHeadcountSourceUrl: nullableText(row, "engineering_headcount_source_url"),
+    scoreBreakdown: row.score_breakdown ? JSON.parse(text(row, "score_breakdown")) as CompanyScoreBreakdown : null,
     reason: nullableText(row, "reason"),
+    salesThesis: nullableText(row, "sales_thesis"),
     chatFeatureStatus: text(row, "chat_feature_status") as Company["chatFeatureStatus"],
     chatFeatureSourceUrl: nullableText(row, "chat_feature_source_url"),
+    chatImplementation: text(row, "chat_implementation") as Company["chatImplementation"],
+    chatVendorName: nullableText(row, "chat_vendor_name"),
+    chatImplementationSourceUrl: nullableText(row, "chat_implementation_source_url"),
     status: text(row, "status") as Company["status"],
     createdAt: text(row, "created_at") };
 }
