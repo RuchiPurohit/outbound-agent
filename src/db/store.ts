@@ -395,7 +395,7 @@ export class OutboundStore {
     notes?: string;
   }): ProspectResearch {
     return this.db.transaction(() => {
-      this.requireProspectEligible(input.contactId);
+      this.requireResearchEligible(input.contactId);
       if (this.getProspectResearch(input.contactId)) {
         throw new WorkflowError("Prospect research already exists; do not duplicate completed research");
       }
@@ -449,6 +449,14 @@ export class OutboundStore {
       .flatMap(({ id }) => this.listContacts(id))
       .filter(({ status, email, emailStatus }) => status === "APPROVED" && email
         && (emailStatus === "PUBLICLY_LISTED" || emailStatus === "VERIFIED"));
+  }
+
+  listResearchEligibleProspects(campaignId: number): Contact[] {
+    return this.listCompanies({ campaignId, status: "APPROVED" })
+      .flatMap(({ id }) => this.listContacts(id))
+      .filter(({ status, email, emailStatus, guessedEmail }) => status === "APPROVED"
+        && ((email && (emailStatus === "PUBLICLY_LISTED" || emailStatus === "VERIFIED"))
+          || (emailStatus === "EMAIL_NOT_FOUND" && guessedEmail)));
   }
 
   createOutreach(input: { contactId: number; subject: string; body: string; researchId?: number }): Outreach {
@@ -759,6 +767,18 @@ export class OutboundStore {
     const contact = this.requireContact(contactId);
     if (!contact.email || !["PUBLICLY_LISTED", "VERIFIED"].includes(contact.emailStatus)) {
       throw new WorkflowError("Prospect research and drafts require a sourced business email");
+    }
+    return contact;
+  }
+
+  private requireResearchEligible(contactId: number): Contact {
+    this.requireCurrentApprovals(contactId);
+    const contact = this.requireContact(contactId);
+    const hasSourcedEmail = contact.email
+      && ["PUBLICLY_LISTED", "VERIFIED"].includes(contact.emailStatus);
+    const hasSeparateGuess = contact.emailStatus === "EMAIL_NOT_FOUND" && contact.guessedEmail;
+    if (!hasSourcedEmail && !hasSeparateGuess) {
+      throw new WorkflowError("Prospect research requires a sourced business email or a separate guessed-email hint");
     }
     return contact;
   }

@@ -112,7 +112,9 @@ how to apply them and report candidates that did not qualify.
 ### Prospect research, drafting, and review
 
 After email discovery, the dashboard automatically researches approved
-prospects at approved companies with sourced business emails. It stores at
+prospects at approved companies with sourced business emails or separate
+guessed-email hints. Guesses unlock research only; drafting and sending still
+require a sourced business email. Prospect research stores at
 most three useful signals per contact, the strongest signal, a conditional pain
 hypothesis, and ConvoKit relevance. Prospects without a credible signal are
 marked `NO_SIGNAL` and are not drafted.

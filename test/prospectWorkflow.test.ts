@@ -45,10 +45,14 @@ describe("Prospect workflow", () => {
       store.recordEmailGuess({ contactId: contact.id, guessedEmail: "pat@example.com",
         pattern: "firstname", confidence: "COMMON_PATTERN",
         basis: "Verified name maps cleanly to a common first-name pattern" });
+      assert.doesNotThrow(() => validateRequest(store, {
+        campaignId: campaign.id, kind: "PROSPECT_RESEARCH",
+      }));
       assert.throws(() => validateRequest(store, {
         campaignId: campaign.id, kind: "EMAIL_DISCOVERY",
       }), /awaiting email discovery or a guess/);
       assert.deepEqual(store.listEligibleProspects(campaign.id), []);
+      assert.deepEqual(store.listResearchEligibleProspects(campaign.id).map(({ id }) => id), [contact.id]);
     } finally { db.close(); }
   });
 
@@ -58,7 +62,7 @@ describe("Prospect workflow", () => {
       assert.match(renderProspectStages(store, campaign.id), /No eligible prospects are ready for research/);
       email();
       const ready = renderProspectStages(store, campaign.id);
-      assert.match(ready, /Approved prospects with business emails are ready for research/);
+      assert.match(ready, /Approved prospects with sourced or guessed emails are ready for research/);
       assert.match(ready, /Click Run prospect research/);
       assert.doesNotMatch(ready, /then discover their business emails to unlock/);
       const run = store.createWorkflowRun({ campaignId: campaign.id, kind: "EMAIL_DISCOVERY" });

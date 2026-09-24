@@ -60,7 +60,8 @@ function workflowPrompt(request: WorkflowRequest): string {
       return [
         "Read AGENTS.md, docs/ICP.md, and prompts/prospect-research.md.",
         `Run prospect research for campaign ${request.campaignId}.`,
-        "Process only approved contacts at approved companies with sourced business emails and no existing prospect research.",
+        "Process only approved contacts at approved companies with either a sourced business email or a separately stored guessed-email hint, and no existing prospect research.",
+        "A guessed email permits research only. Never treat it as discovered, draft to it, approve it, or send to it.",
         "Use saveProspectResearch to persist at most three useful sourced signals, the strongest signal, a plausible pain hypothesis, and ConvoKit relevance.",
         "If no credible angle exists, save NO_SIGNAL using an empty signals array; never manufacture an angle.",
         "Do not generate emails. Stop for the user to select researched contacts in the dashboard checklist.",
@@ -108,9 +109,10 @@ export function validateRequest(store: OutboundStore, request: WorkflowRequest):
     }
   }
   const eligible = store.listEligibleProspects(request.campaignId);
+  const researchEligible = store.listResearchEligibleProspects(request.campaignId);
   if (request.kind === "PROSPECT_RESEARCH"
-    && !eligible.some(({ id }) => !store.getProspectResearch(id))) {
-    throw new WorkflowError("No approved prospects with sourced emails are awaiting research");
+    && !researchEligible.some(({ id }) => !store.getProspectResearch(id))) {
+    throw new WorkflowError("No approved prospects with sourced or guessed emails are awaiting research");
   }
   if (request.kind === "EMAIL_GENERATION") {
     if (!request.contactIds?.length) throw new WorkflowError("Select at least one researched prospect to generate drafts");
@@ -133,7 +135,7 @@ export function validateRequest(store: OutboundStore, request: WorkflowRequest):
 }
 
 export function nextWorkflowRequest(store: OutboundStore, finished: WorkflowRequest): WorkflowRequest | undefined {
-  const eligible = store.listEligibleProspects(finished.campaignId);
+  const eligible = store.listResearchEligibleProspects(finished.campaignId);
   if (finished.kind === "EMAIL_DISCOVERY"
     && eligible.some(({ id }) => !store.getProspectResearch(id))) {
     return { campaignId: finished.campaignId, kind: "PROSPECT_RESEARCH" };

@@ -229,6 +229,16 @@ describe("OutboundStore", () => {
     assert.equal(guessed.guessedEmailPattern, "firstname");
     assert.equal(guessed.guessedEmailConfidence, "COMMON_PATTERN");
     assert.deepEqual(store.listEligibleProspects(company.campaignId), []);
+    assert.deepEqual(store.listResearchEligibleProspects(company.campaignId).map(({ id }) => id), [contact.id]);
+
+    const guessedResearch = store.saveProspectResearch({ contactId: contact.id,
+      signals: [{ signal: "Launched a collaboration workflow", sourceUrl: "https://example.com/launch" }],
+      strongestSignalIndex: 0,
+      painHypothesis: "The workflow may eventually need embedded messaging.",
+      relevance: "ConvoKit could provide the messaging infrastructure." });
+    assert.equal(guessedResearch.status, "READY");
+    assert.throws(() => store.createOutreach({ contactId: contact.id, subject: "Collaboration",
+      body: "A researched draft", researchId: guessedResearch.strongestResearchId! }), /sourced business email/);
 
     assert.throws(() => store.recordEmailGuess({ contactId: contact.id,
       guessedEmail: "pat@other.test", pattern: "firstname", confidence: "COMMON_PATTERN",

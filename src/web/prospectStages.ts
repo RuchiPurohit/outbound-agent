@@ -10,9 +10,10 @@ export function renderProspectStages(
   const companies = store.listCompanies({ campaignId });
   const contacts = companies.flatMap(({ id }) => store.listContacts(id));
   const eligible = store.listEligibleProspects(campaignId);
+  const researchEligible = store.listResearchEligibleProspects(campaignId);
   const activeRuns = store.listWorkflowRuns().filter(({ status }) => status === "RUNNING" || status === "PENDING");
   const active = activeRuns.length > 0;
-  const researchPending = eligible.filter(({ id }) => !store.getProspectResearch(id));
+  const researchPending = researchEligible.filter(({ id }) => !store.getProspectResearch(id));
   const draftPending = eligible.filter(({ id }) => store.getProspectResearch(id)?.status === "READY"
     && store.listOutreach(id).length === 0);
   const selectable = new Set(draftPending.map(({ id }) => id));
@@ -22,9 +23,9 @@ export function renderProspectStages(
     ? "Prospect research is in progress. Saved signals and personalization angles will appear here as results arrive."
     : researchPending.length > 0
       ? active
-        ? "Approved prospects with business emails are ready for research. Wait for the active workflow to finish before starting research."
-        : "Approved prospects with business emails are ready for research. Click Run prospect research, then check the researched contacts you want emails drafted for."
-      : "No eligible prospects are ready for research. Approve companies and contacts, then discover their business emails to unlock this step.";
+        ? "Approved prospects with sourced or guessed emails are ready for research. Wait for the active workflow to finish before starting research."
+        : "Approved prospects with sourced or guessed emails are ready for research. Click Run prospect research. Guessed-email contacts remain blocked from drafting until a sourced email is found."
+      : "No eligible prospects are ready for research. Approve companies and contacts, then discover or separately guess their business emails to unlock this step.";
 
   const researchCards = contacts.map((contact) => {
     const analysis = store.getProspectResearch(contact.id);

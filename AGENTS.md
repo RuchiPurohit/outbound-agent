@@ -187,10 +187,12 @@ from an email pattern.
 
 Prospect research and email generation are separate dashboard workflows:
 `prompts/prospect-research.md` and `prompts/email-generation.md`.
-Only approved contacts at approved companies with sourced business emails are
-eligible. Keep verified signals separate from pain hypotheses. Every draft
-must link to one of the prospect's sourced signals. Generated and rewritten
-outreach stays DRAFT; only an explicit human dashboard review may approve it.
+Approved contacts at approved companies with either sourced business emails or
+separate guessed-email hints are eligible for prospect research. Guesses do not
+make contacts eligible for drafting, approval, or sending; those steps still
+require a sourced business email. Keep verified signals separate from pain
+hypotheses. Every draft must link to one of the prospect's sourced signals.
+Generated and rewritten outreach stays DRAFT; only an explicit human dashboard review may approve it.
 Never invoke approval operations from a research or generation workflow.
 Research must stop for checklist selection. Generate first-touch drafts only
 for the contact IDs explicitly checked in the dashboard generation request.

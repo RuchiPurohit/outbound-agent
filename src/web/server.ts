@@ -55,6 +55,14 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
   );
   body = body.replace(">Find public emails</button>", ">Find emails / guesses</button>");
   body = body.replace("approved contact(s) awaiting discovery", "approved contact(s) awaiting email check or guess");
+  body = body.replace(
+    '<section class="card span8"><div class="cardhead"><div><span class="eyebrow">Stage 3</span>',
+    '<section class="card span12"><div class="cardhead"><div><span class="eyebrow">Stage 3</span>',
+  );
+  body = body.replace(
+    '<aside class="card span4"><span class="eyebrow">Safety gates</span>',
+    '<aside class="card span12"><span class="eyebrow">Safety gates</span>',
+  );
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)} · Outbound</title>${options.refreshing ? '<meta http-equiv="refresh" content="3">' : ""}
