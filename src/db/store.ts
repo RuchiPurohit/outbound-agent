@@ -447,16 +447,15 @@ export class OutboundStore {
   listEligibleProspects(campaignId: number): Contact[] {
     return this.listCompanies({ campaignId, status: "APPROVED" })
       .flatMap(({ id }) => this.listContacts(id))
-      .filter(({ status, email, emailStatus }) => status === "APPROVED" && email
-        && (emailStatus === "PUBLICLY_LISTED" || emailStatus === "VERIFIED"));
+      .filter((contact) => contact.status === "APPROVED" && !!this.recipientFor(contact));
   }
 
   listResearchEligibleProspects(campaignId: number): Contact[] {
-    return this.listCompanies({ campaignId, status: "APPROVED" })
-      .flatMap(({ id }) => this.listContacts(id))
-      .filter(({ status, email, emailStatus, guessedEmail }) => status === "APPROVED"
-        && ((email && (emailStatus === "PUBLICLY_LISTED" || emailStatus === "VERIFIED"))
-          || (emailStatus === "EMAIL_NOT_FOUND" && guessedEmail)));
+    return this.listEligibleProspects(campaignId);
+  }
+
+  getContactRecipient(contactId: number): { address: string; guessed: boolean } | undefined {
+    return this.recipientFor(this.requireContact(contactId));
   }
 
   createOutreach(input: { contactId: number; subject: string; body: string; researchId?: number }): Outreach {
@@ -520,9 +519,10 @@ export class OutboundStore {
     const draft = this.requireOutreach(id);
     this.requireDraftEvidence(draft.contactId, draft.researchId ?? undefined);
     this.transitionOutreach(id, "DRAFT", "APPROVED");
+    const recipient = this.requireContactRecipient(draft.contactId);
     this.db.prepare(`UPDATE outreach
       SET reviewed_at = ?, approved_recipient = ?, approved_subject = ?, approved_body = ? WHERE id = ?`)
-      .run(now(), this.requireContact(draft.contactId).email, draft.subject, draft.body, id);
+      .run(now(), recipient.address, draft.subject, draft.body, id);
     return this.getOutreach(id)!;
   }
 
@@ -564,8 +564,8 @@ export class OutboundStore {
     if (draft.status !== "READY_TO_SEND") throw new WorkflowError("Only READY_TO_SEND emails can be sent");
     this.requireDraftEvidence(draft.contactId, draft.researchId ?? undefined);
     this.assertContactLimit(draft.contactId);
-    const contact = this.requireContact(draft.contactId);
-    if (!draft.reviewedAt || draft.approvedRecipient !== contact.email
+    const recipient = this.requireContactRecipient(draft.contactId);
+    if (!draft.reviewedAt || draft.approvedRecipient !== recipient.address
       || draft.approvedSubject !== draft.subject || draft.approvedBody !== draft.body) {
       throw new WorkflowError("Recipient or content is not covered by the saved approval. Return to draft and approve again.");
     }
@@ -765,22 +765,30 @@ export class OutboundStore {
   private requireProspectEligible(contactId: number): Contact {
     this.requireCurrentApprovals(contactId);
     const contact = this.requireContact(contactId);
-    if (!contact.email || !["PUBLICLY_LISTED", "VERIFIED"].includes(contact.emailStatus)) {
-      throw new WorkflowError("Prospect research and drafts require a sourced business email");
-    }
+    this.requireContactRecipient(contactId);
     return contact;
   }
 
   private requireResearchEligible(contactId: number): Contact {
-    this.requireCurrentApprovals(contactId);
-    const contact = this.requireContact(contactId);
-    const hasSourcedEmail = contact.email
-      && ["PUBLICLY_LISTED", "VERIFIED"].includes(contact.emailStatus);
-    const hasSeparateGuess = contact.emailStatus === "EMAIL_NOT_FOUND" && contact.guessedEmail;
-    if (!hasSourcedEmail && !hasSeparateGuess) {
-      throw new WorkflowError("Prospect research requires a sourced business email or a separate guessed-email hint");
+    return this.requireProspectEligible(contactId);
+  }
+
+  private recipientFor(contact: Contact): { address: string; guessed: boolean } | undefined {
+    if (contact.email && ["PUBLICLY_LISTED", "VERIFIED"].includes(contact.emailStatus)) {
+      return { address: contact.email, guessed: false };
     }
-    return contact;
+    if (contact.emailStatus === "EMAIL_NOT_FOUND" && contact.guessedEmail) {
+      return { address: contact.guessedEmail, guessed: true };
+    }
+    return undefined;
+  }
+
+  private requireContactRecipient(contactId: number): { address: string; guessed: boolean } {
+    const recipient = this.getContactRecipient(contactId);
+    if (!recipient) {
+      throw new WorkflowError("Prospect workflow requires a sourced or explicitly guessed business email");
+    }
+    return recipient;
   }
 
   private requireDraftEvidence(contactId: number, researchId: number | undefined): void {

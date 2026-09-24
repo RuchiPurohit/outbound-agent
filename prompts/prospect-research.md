@@ -6,8 +6,8 @@ dashboard (default data/outbound.sqlite).
 Use `listResearchEligibleProspects(campaignId)` and skip contacts with existing
 `getProspectResearch(contactId)`. Both contact and company must be APPROVED.
 The contact must have either a sourced professional email or a separately
-stored guessed-email hint. A guess permits research only: never treat it as
-public, verified, deliverable, or eligible for drafting or sending.
+stored guessed-email hint. Never treat a guess as public, verified, or
+deliverable; downstream review and send confirmation must keep it labelled.
 
 Research deeply enough for one credible personalization angle. Find at most
 three useful signals: recent product launches, engineering hiring, technical

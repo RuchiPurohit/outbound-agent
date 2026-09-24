@@ -40,7 +40,7 @@ it("migrates version 4 without losing existing outreach or workflow output", () 
     assert.equal(store.getCompany(1)?.scoreBreakdown, null);
     assert.equal(store.getContact(1)?.guessedEmail, null);
     assert.equal(store.getContact(1)?.guessedEmailConfidence, null);
-    assert.throws(() => store.approveOutreachForSending(1), /sourced business email/);
+    assert.throws(() => store.approveOutreachForSending(1), /sourced or explicitly guessed/);
   } finally { db.close(); rmSync(directory, { recursive: true }); }
 });
 

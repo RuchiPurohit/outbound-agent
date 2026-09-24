@@ -66,8 +66,9 @@ SQLite but does not research email addresses or create outreach.
 contacts only. It stores sourced outcomes in SQLite and writes a readable report
 to `data/campaign-<id>-emails.md`. When no public business address is found, the
 workflow may also show one clearly labeled company-domain guess in a separate
-column. Guesses remain `EMAIL_NOT_FOUND`, are never treated as sourced or
-verified, and cannot be used by research, drafting, approval, or Gmail sending.
+column. Guesses remain `EMAIL_NOT_FOUND` and are never treated as sourced or
+verified. They may be researched, drafted, approved, and sent only through the
+same explicit human review and final Gmail confirmation used for sourced emails.
 
 If `codex` is not on the shell `PATH`, the command also checks common VS Code,
 VS Code Insiders, Cursor, and Windsurf extension locations. You can override
@@ -113,8 +114,8 @@ how to apply them and report candidates that did not qualify.
 
 After email discovery, the dashboard automatically researches approved
 prospects at approved companies with sourced business emails or separate
-guessed-email hints. Guesses unlock research only; drafting and sending still
-require a sourced business email. Prospect research stores at
+guessed-email hints. Guessed recipients remain visibly marked as unverified
+through draft review and final send confirmation. Prospect research stores at
 most three useful signals per contact, the strongest signal, a conditional pain
 hypothesis, and ConvoKit relevance. Prospects without a credible signal are
 marked `NO_SIGNAL` and are not drafted.

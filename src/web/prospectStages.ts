@@ -24,7 +24,7 @@ export function renderProspectStages(
     : researchPending.length > 0
       ? active
         ? "Approved prospects with sourced or guessed emails are ready for research. Wait for the active workflow to finish before starting research."
-        : "Approved prospects with sourced or guessed emails are ready for research. Click Run prospect research. Guessed-email contacts remain blocked from drafting until a sourced email is found."
+        : "Approved prospects with sourced or guessed emails are ready for research. Click Run prospect research. Guessed recipients remain clearly labelled through drafting and send confirmation."
       : "No eligible prospects are ready for research. Approve companies and contacts, then discover or separately guess their business emails to unlock this step.";
 
   const researchCards = contacts.map((contact) => {
@@ -43,6 +43,7 @@ export function renderProspectStages(
   const emails = outreach.map((draft) => {
     const contact = contacts.find(({ id }) => id === draft.contactId)!;
     const company = companies.find(({ id }) => id === contact.companyId)!;
+    const recipient = store.getContactRecipient(contact.id);
     const signal = draft.researchId === null ? undefined : store.getResearchRecord(draft.researchId);
     const delivery = store.listEmailDeliveries().find((item) => item.outreachId === draft.id);
     const canApprove = eligible.some(({ id }) => id === contact.id)
@@ -51,8 +52,11 @@ export function renderProspectStages(
     const reviewControls = draft.status === "DRAFT"
       ? `<form method="post" action="/campaigns/${campaignId}/outreach/${draft.id}/review" class="actions"><button name="decision" value="APPROVED" ${active || !canApprove ? "disabled" : ""}>Approve → Ready to send</button><button name="decision" value="REJECTED" class="danger" ${active ? "disabled" : ""}>Reject draft</button></form><form method="post" action="/campaigns/${campaignId}/outreach/${draft.id}/rewrite" style="margin-top:16px"><label><span>Rewrite instructions</span><textarea name="feedback" required maxlength="2000" placeholder="Less salesy; shorten the opening and keep the technical detail."></textarea></label><button class="secondary" ${active ? "disabled" : ""}>Request rewrite</button></form>` : "";
     const blocked = delivery && delivery.status !== "FAILED";
-    const approvalMatches = draft.approvedRecipient === contact.email
+    const approvalMatches = draft.approvedRecipient === recipient?.address
       && draft.approvedSubject === draft.subject && draft.approvedBody === draft.body && canApprove;
+    const guessedWarning = recipient?.guessed
+      ? `<div class="notice error"><strong>Guessed recipient:</strong> ${escapeHtml(recipient.address)} is unverified. Approval and final send confirmation accept the risk of a bounce or wrong mailbox.</div>`
+      : "";
     const sendControls = draft.status === "READY_TO_SEND"
       ? blocked
         ? `<div class="notice">Delivery ${delivery.status.toLowerCase()}. ${escapeHtml(delivery.error ?? "Wait for Gmail confirmation. Sending again is blocked.")}</div>`
@@ -62,7 +66,7 @@ export function renderProspectStages(
           : '<div class="notice">This email needs fresh approval before sending because its recipient or content was not captured by the original approval.</div>'}<form method="post" action="/campaigns/${campaignId}/outreach/${draft.id}/restore" style="margin-top:12px"><button class="secondary" ${active ? "disabled" : ""}>Return to draft for review</button></form>`
       : delivery?.status === "SENT"
         ? `<p class="muted">Sent from ${escapeHtml(delivery.fromEmail)} · ${escapeHtml(delivery.finishedAt)}<br>Gmail message: ${escapeHtml(delivery.gmailMessageId)} · Thread: ${escapeHtml(delivery.gmailThreadId)}</p>` : "";
-    return `<details class="email-draft" id="email-${draft.id}"${draft.id === selectedDraftId ? " open" : ""}><summary>${escapeHtml(contact.name)} · ${escapeHtml(company.name)} · ${escapeHtml(draft.subject)} <span class="badge ${draft.status}">${escapeHtml(draft.status.replaceAll("_", " "))}</span></summary><p><strong>To:</strong> ${escapeHtml(delivery?.toEmail ?? draft.approvedRecipient ?? contact.email ?? "No email")} · ${escapeHtml(contact.title)}</p><p><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p><pre class="email-preview">${escapeHtml(draft.body)}</pre>${signal ? `<p class="muted"><strong>Cited signal:</strong> ${escapeHtml(signal.signal)} <a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noreferrer">Source ↗</a></p>` : '<div class="notice error">This legacy draft has no linked prospect signal and cannot be approved. Reject it or complete research and request a rewrite.</div>'}${reviewControls}${sendControls}</details>`;
+    return `<details class="email-draft" id="email-${draft.id}"${draft.id === selectedDraftId ? " open" : ""}><summary>${escapeHtml(contact.name)} · ${escapeHtml(company.name)} · ${escapeHtml(draft.subject)} <span class="badge ${draft.status}">${escapeHtml(draft.status.replaceAll("_", " "))}</span></summary><p><strong>To:</strong> ${escapeHtml(delivery?.toEmail ?? draft.approvedRecipient ?? recipient?.address ?? "No email")}${recipient?.guessed ? ' <span class="badge UNKNOWN">Guessed</span>' : ""} · ${escapeHtml(contact.title)}</p>${guessedWarning}<p><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p><pre class="email-preview">${escapeHtml(draft.body)}</pre>${signal ? `<p class="muted"><strong>Cited signal:</strong> ${escapeHtml(signal.signal)} <a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noreferrer">Source ↗</a></p>` : '<div class="notice error">This legacy draft has no linked prospect signal and cannot be approved. Reject it or complete research and request a rewrite.</div>'}${reviewControls}${sendControls}</details>`;
   }).join("");
   const emailEmptyMessage = draftPending.length
     ? "No emails generated yet. Check researched prospects above and click Generate drafts for checked contacts."

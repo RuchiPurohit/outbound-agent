@@ -209,7 +209,7 @@ describe("OutboundStore", () => {
     }).emailStatus, "EMAIL_NOT_FOUND");
   });
 
-  it("stores email guesses separately without making them sendable", () => {
+  it("keeps guessed recipients separate while allowing explicitly approved outreach", () => {
     const { company } = campaignAndCompany();
     store.reviewCompany(company.id, "APPROVED");
     const contact = store.createContact({ companyId: company.id, name: "Pat Lee" });
@@ -228,7 +228,7 @@ describe("OutboundStore", () => {
     assert.equal(guessed.guessedEmail, "pat@example.com");
     assert.equal(guessed.guessedEmailPattern, "firstname");
     assert.equal(guessed.guessedEmailConfidence, "COMMON_PATTERN");
-    assert.deepEqual(store.listEligibleProspects(company.campaignId), []);
+    assert.deepEqual(store.listEligibleProspects(company.campaignId).map(({ id }) => id), [contact.id]);
     assert.deepEqual(store.listResearchEligibleProspects(company.campaignId).map(({ id }) => id), [contact.id]);
 
     const guessedResearch = store.saveProspectResearch({ contactId: contact.id,
@@ -237,8 +237,9 @@ describe("OutboundStore", () => {
       painHypothesis: "The workflow may eventually need embedded messaging.",
       relevance: "ConvoKit could provide the messaging infrastructure." });
     assert.equal(guessedResearch.status, "READY");
-    assert.throws(() => store.createOutreach({ contactId: contact.id, subject: "Collaboration",
-      body: "A researched draft", researchId: guessedResearch.strongestResearchId! }), /sourced business email/);
+    const draft = store.createOutreach({ contactId: contact.id, subject: "Collaboration",
+      body: "A researched draft", researchId: guessedResearch.strongestResearchId! });
+    assert.equal(draft.status, "DRAFT");
 
     assert.throws(() => store.recordEmailGuess({ contactId: contact.id,
       guessedEmail: "pat@other.test", pattern: "firstname", confidence: "COMMON_PATTERN",
@@ -255,12 +256,18 @@ describe("OutboundStore", () => {
       basis: "A public same-domain employee address demonstrates this pattern",
       sourceUrl: "https://example.com/team" });
     assert.equal(supported.guessedEmailSourceUrl, "https://example.com/team");
+    const approved = store.approveOutreachForSending(draft.id);
+    assert.equal(approved.status, "READY_TO_SEND");
+    assert.equal(approved.approvedRecipient, "pat@example.com");
+    assert.equal(store.getContactRecipient(contact.id)?.guessed, true);
+    assert.doesNotThrow(() => store.assertReadyToSend(draft.id));
 
     const found = store.recordEmailDiscovery({ contactId: contact.id,
       emailStatus: "PUBLICLY_LISTED", email: "pat.lee@example.com",
       sourceUrl: "https://example.com/pat" });
     assert.equal(found.guessedEmail, null);
     assert.equal(found.guessedEmailConfidence, null);
+    assert.throws(() => store.assertReadyToSend(draft.id), /saved approval/);
   });
 
   it("enforces the outreach approval state machine", () => {
@@ -323,7 +330,7 @@ describe("OutboundStore", () => {
     store.reviewCompany(company.id, "APPROVED");
     const contact = store.createContact({ companyId: company.id, name: "Pat" });
     store.reviewContact(contact.id, "APPROVED");
-    assert.throws(() => store.saveProspectResearch({ contactId: contact.id, signals: [] }), /sourced business email/);
+    assert.throws(() => store.saveProspectResearch({ contactId: contact.id, signals: [] }), /sourced or explicitly guessed/);
     store.recordEmailDiscovery({ contactId: contact.id, emailStatus: "PUBLICLY_LISTED",
       email: "pat@example.com", sourceUrl: "https://example.com/team" });
     const signal = { signal: "Launched workspace", sourceUrl: "https://example.com/launch" };

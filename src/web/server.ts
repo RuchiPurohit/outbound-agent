@@ -230,8 +230,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (!sender) { redirect(response, "/gmail", { error: "Connect Gmail before sending approved emails" }); return; }
     const blocked = store.listEmailDeliveries().find((delivery) => delivery.outreachId === id && delivery.status !== "FAILED");
     if (blocked) throw new WorkflowError("Delivery is already active, sent, or uncertain. Do not resend.");
-    const expected = { fromEmail: sender, toEmail: contact.email!, subject: draft.subject, body: draft.body };
-    send(response, 200, layout("Confirm send", `<a href="/campaigns/${campaignId}#draft-review">← Emails</a><section class="card" style="margin-top:18px"><h1>Confirm sending</h1><p><strong>From:</strong> ${escapeHtml(sender)}<br><strong>To:</strong> ${escapeHtml(contact.email)}<br><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p><pre class="email-preview">${escapeHtml(draft.body)}</pre><div class="notice">This sends a real email to this prospect. Sending cannot be undone by this dashboard.</div><form method="post" action="/campaigns/${campaignId}/outreach/${id}/send"><input type="hidden" name="sendSignature" value="${signature("outreach", id, expected)}"><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending this exact approved email to the recipient above.</label><button>Send email now</button></form></section>`)); return;
+    const recipient = store.getContactRecipient(contact.id)!;
+    const expected = { fromEmail: sender, toEmail: recipient.address, subject: draft.subject, body: draft.body };
+    const recipientWarning = recipient.guessed
+      ? `<div class="notice error"><strong>Warning:</strong> ${escapeHtml(recipient.address)} is a guessed, unverified address. It may bounce or belong to someone else.</div>`
+      : "";
+    send(response, 200, layout("Confirm send", `<a href="/campaigns/${campaignId}#draft-review">← Emails</a><section class="card" style="margin-top:18px"><h1>Confirm sending</h1><p><strong>From:</strong> ${escapeHtml(sender)}<br><strong>To:</strong> ${escapeHtml(recipient.address)}${recipient.guessed ? ' <span class="badge UNKNOWN">Guessed</span>' : ""}<br><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p>${recipientWarning}<pre class="email-preview">${escapeHtml(draft.body)}</pre><div class="notice">This sends a real email to this prospect. Sending cannot be undone by this dashboard.</div><form method="post" action="/campaigns/${campaignId}/outreach/${id}/send"><input type="hidden" name="sendSignature" value="${signature("outreach", id, expected)}"><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending this exact approved email to the recipient above${recipient.guessed ? ", knowing the address is guessed and unverified" : ""}.</label><button>Send email now</button></form></section>`)); return;
   }
   if (request.method === "GET" && url.pathname === "/") {
     send(response, 200, dashboardPage(url)); return;
@@ -284,7 +288,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       if (draftAction[2] === "send") {
         const sender = gmail.connectedEmail();
         const current = store.assertReadyToSend(outreachId);
-        const expected = { fromEmail: sender ?? "", toEmail: contact!.email!, subject: current.subject, body: current.body };
+        const recipient = store.getContactRecipient(contact!.id);
+        const expected = { fromEmail: sender ?? "", toEmail: recipient?.address ?? "", subject: current.subject, body: current.body };
         if (!sender || form.get("confirm") !== "yes"
           || !validSignature(form.get("sendSignature"), signature("outreach", outreachId, expected))) {
           throw new WorkflowError("Send confirmation expired or recipient/content changed. Review the email and confirm sending again.");

@@ -69,6 +69,26 @@ describe("Gmail sending", () => {
     } finally { f.db.close(); }
   });
 
+  it("sends to a guessed recipient only after draft approval", async () => {
+    const requests: RequestInit[] = [];
+    const f = fixture(async (_url, init) => { requests.push(init!); return success(); }, false);
+    try {
+      f.store.recordEmailDiscovery({ contactId: f.contact.id, emailStatus: "EMAIL_NOT_FOUND" });
+      f.store.recordEmailGuess({ contactId: f.contact.id, guessedEmail: "pat.guessed@example.com",
+        pattern: "firstname.lastname", confidence: "COMMON_PATTERN",
+        basis: "Explicit test guess" });
+      assert.equal(f.store.getOutreach(f.draft.id)?.status, "DRAFT");
+      const approved = f.store.approveOutreachForSending(f.draft.id);
+      assert.equal(approved.approvedRecipient, "pat.guessed@example.com");
+      const expected = { ...f.expected, toEmail: "pat.guessed@example.com" };
+      const delivery = await f.sending.sendApproved(f.draft.id, expected);
+      assert.equal(delivery.toEmail, "pat.guessed@example.com");
+      const payload = JSON.parse(String(requests[0]!.body)) as { raw: string };
+      assert.match(Buffer.from(payload.raw, "base64url").toString("utf8"),
+        /To: pat\.guessed@example\.com\r\n/);
+    } finally { f.db.close(); }
+  });
+
   it("never dispatches unapproved drafts, changed recipients, or changed content", async () => {
     let calls = 0;
     const f = fixture(async () => { calls++; return success(); }, false);

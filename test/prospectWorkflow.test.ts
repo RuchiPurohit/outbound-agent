@@ -51,7 +51,7 @@ describe("Prospect workflow", () => {
       assert.throws(() => validateRequest(store, {
         campaignId: campaign.id, kind: "EMAIL_DISCOVERY",
       }), /awaiting email discovery or a guess/);
-      assert.deepEqual(store.listEligibleProspects(campaign.id), []);
+      assert.deepEqual(store.listEligibleProspects(campaign.id).map(({ id }) => id), [contact.id]);
       assert.deepEqual(store.listResearchEligibleProspects(campaign.id).map(({ id }) => id), [contact.id]);
     } finally { db.close(); }
   });
@@ -162,6 +162,9 @@ describe("Prospect workflow", () => {
       email(); research();
       store.createOutreach({ contactId: contact.id, subject: "First draft", body: "FIRST_BODY",
         researchId: store.getProspectResearch(contact.id)!.strongestResearchId! });
+      store.recordEmailDiscovery({ contactId: contact.id, emailStatus: "EMAIL_NOT_FOUND" });
+      store.recordEmailGuess({ contactId: contact.id, guessedEmail: "pat.guessed@example.com",
+        pattern: "firstname.lastname", confidence: "COMMON_PATTERN", basis: "Explicit test guess" });
       const second = store.createContact({ companyId: company.id, name: "Second contact" });
       store.reviewContact(second.id, "APPROVED");
       store.recordEmailDiscovery({ contactId: second.id, emailStatus: "PUBLICLY_LISTED",
@@ -183,6 +186,9 @@ describe("Prospect workflow", () => {
       assert.match(html, /Request rewrite/);
       assert.match(html, /Reject draft/);
       assert.match(html, /Pat &lt;Lee&gt;/);
+      assert.match(html, /Guessed recipient/);
+      assert.match(html, /pat\.guessed@example\.com/);
+      assert.match(html, /bounce or wrong mailbox/);
       assert.match(html, /Approval alone never sends an email/);
     } finally { db.close(); }
   });
