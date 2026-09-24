@@ -103,9 +103,14 @@ If something cannot be verified, mark it UNKNOWN.
 
 ## Email discovery
 
-Never fabricate or assume an email address.
+Search for a public professional business address before generating any guess.
+An inferred address is never considered public, verified, or sendable. Store at
+most one best guess only after recording `EMAIL_NOT_FOUND`, using the separate
+guess fields and `recordEmailGuess`; never put a guess in `contacts.email`.
 
-An inferred email pattern is not considered verified.
+Prefer a publicly demonstrated same-domain employee pattern. Otherwise use the
+ordered common patterns in `prompts/email-discovery.md`. Record the pattern,
+confidence, and basis. `PATTERN_SUPPORTED` also requires a public source URL.
 
 If no reliable professional business email can be found:
 

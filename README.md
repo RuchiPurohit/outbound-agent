@@ -64,7 +64,10 @@ SQLite but does not research email addresses or create outreach.
 
 `emails:discover` similarly runs `prompts/email-discovery.md` for approved
 contacts only. It stores sourced outcomes in SQLite and writes a readable report
-to `data/campaign-<id>-emails.md`.
+to `data/campaign-<id>-emails.md`. When no public business address is found, the
+workflow may also show one clearly labeled company-domain guess in a separate
+column. Guesses remain `EMAIL_NOT_FOUND`, are never treated as sourced or
+verified, and cannot be used by research, drafting, approval, or Gmail sending.
 
 If `codex` is not on the shell `PATH`, the command also checks common VS Code,
 VS Code Insiders, Cursor, and Windsurf extension locations. You can override

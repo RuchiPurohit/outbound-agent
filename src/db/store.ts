@@ -2,7 +2,7 @@ import type { SqliteDatabase } from "./database.js";
 import { randomUUID } from "node:crypto";
 import type {
   Campaign, CampaignStatus, ChatFeatureStatus, ChatImplementation, Company, CompanyScoreBreakdown,
-  Contact, EmailStatus, Outreach, ResearchRecord,
+  Contact, EmailGuessConfidence, EmailGuessPattern, EmailStatus, Outreach, ResearchRecord,
   ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch, EmailDelivery,
 } from "./types.js";
 
@@ -35,6 +35,23 @@ function checkPublicUrl(value: string | null, label: string): void {
   if (!["https:", "http:"].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) {
     throw new WorkflowError(`${label} must be a public HTTP(S) URL`);
   }
+}
+
+function companyEmailDomain(value: string): string {
+  const domain = value.trim().toLowerCase().replace(/^www\./, "");
+  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(domain)) {
+    throw new WorkflowError("Company domain is not valid for an email guess");
+  }
+  return domain;
+}
+
+function checkedGuessedEmail(value: string, companyDomain: string): string {
+  const email = value.trim().toLowerCase();
+  const match = /^([a-z0-9]+(?:[._-][a-z0-9]+)*)@([a-z0-9.-]+)$/.exec(email);
+  if (!match || match[2] !== companyEmailDomain(companyDomain)) {
+    throw new WorkflowError("Guessed email must be a valid address on the company domain");
+  }
+  return email;
 }
 
 export class WorkflowError extends Error {}
@@ -302,7 +319,10 @@ export class OutboundStore {
         throw new WorkflowError("EMAIL_NOT_FOUND cannot include an email address");
       }
 
-      this.db.prepare("UPDATE contacts SET email = ?, email_status = ? WHERE id = ?")
+      this.db.prepare(`UPDATE contacts SET email = ?, email_status = ?,
+        guessed_email = NULL, guessed_email_pattern = NULL,
+        guessed_email_confidence = NULL, guessed_email_basis = NULL,
+        guessed_email_source_url = NULL WHERE id = ?`)
         .run(found ? input.email : null, input.emailStatus, input.contactId);
 
       if (found) {
@@ -316,6 +336,41 @@ export class OutboundStore {
       }
       return this.getContact(input.contactId)!;
     })();
+  }
+
+  recordEmailGuess(input: {
+    contactId: number;
+    guessedEmail: string;
+    pattern: EmailGuessPattern;
+    confidence: EmailGuessConfidence;
+    basis: string;
+    sourceUrl?: string;
+  }): Contact {
+    const contact = this.requireContact(input.contactId);
+    if (contact.status !== "APPROVED") {
+      throw new WorkflowError("Email guessing is only allowed for APPROVED contacts");
+    }
+    if (contact.emailStatus !== "EMAIL_NOT_FOUND" || contact.email) {
+      throw new WorkflowError("An email guess may only follow an EMAIL_NOT_FOUND result");
+    }
+    const company = this.requireCompany(contact.companyId);
+    const guessedEmail = checkedGuessedEmail(input.guessedEmail, company.domain);
+    const basis = input.basis.trim();
+    if (!basis) throw new WorkflowError("An email guess requires a basis");
+    const sourceUrl = input.sourceUrl?.trim() || null;
+    checkPublicUrl(sourceUrl, "Email pattern source");
+    if (input.confidence === "PATTERN_SUPPORTED" && !sourceUrl) {
+      throw new WorkflowError("PATTERN_SUPPORTED guesses require a public pattern source URL");
+    }
+    if (input.confidence !== "PATTERN_SUPPORTED" && sourceUrl) {
+      throw new WorkflowError("A pattern source URL is only valid for PATTERN_SUPPORTED guesses");
+    }
+    this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_pattern = ?,
+      guessed_email_confidence = ?, guessed_email_basis = ?, guessed_email_source_url = ?
+      WHERE id = ?`).run(
+      guessedEmail, input.pattern, input.confidence, basis, sourceUrl, input.contactId,
+    );
+    return this.getContact(input.contactId)!;
   }
 
   reviewContact(id: number, decision: Exclude<ReviewStatus, "DISCOVERED">): Contact {
@@ -789,6 +844,11 @@ function contactFromRow(row: Row): Contact {
     title: nullableText(row, "title"), roleCategory: nullableText(row, "role_category"),
     roleScore: nullableInteger(row, "role_score"), linkedinUrl: nullableText(row, "linkedin_url"),
     email: nullableText(row, "email"), emailStatus: text(row, "email_status") as Contact["emailStatus"],
+    guessedEmail: nullableText(row, "guessed_email"),
+    guessedEmailPattern: nullableText(row, "guessed_email_pattern") as Contact["guessedEmailPattern"],
+    guessedEmailConfidence: nullableText(row, "guessed_email_confidence") as Contact["guessedEmailConfidence"],
+    guessedEmailBasis: nullableText(row, "guessed_email_basis"),
+    guessedEmailSourceUrl: nullableText(row, "guessed_email_source_url"),
     status: text(row, "status") as Contact["status"] };
 }
 function researchFromRow(row: Row): ResearchRecord {

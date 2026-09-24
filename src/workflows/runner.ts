@@ -50,9 +50,10 @@ function workflowPrompt(request: WorkflowRequest): string {
       return [
         "Read AGENTS.md, docs/ICP.md, and prompts/email-discovery.md.",
         `Run email discovery for campaign ${request.campaignId}.`,
-        "Process only APPROVED contacts whose email status is UNKNOWN.",
-        "Persist every result through recordEmailDiscovery and update the readable email report.",
-        "Never infer an address, draft outreach, create Gmail drafts, or send messages.",
+        "Process APPROVED contacts whose email status is UNKNOWN, plus EMAIL_NOT_FOUND contacts without a stored guess for guess-only completion.",
+        "Persist every sourced result through recordEmailDiscovery and update the readable email report.",
+        "After EMAIL_NOT_FOUND, optionally store one clearly labeled, non-sendable company-domain guess through recordEmailGuess, following the runbook's pattern order and evidence rules.",
+        "Never store a guess in contacts.email or treat it as public or verified. Do not draft outreach, create Gmail drafts, or send messages.",
         "Complete the workflow; do not merely explain how to do it.",
       ].join(" ");
     case "PROSPECT_RESEARCH":
@@ -100,9 +101,10 @@ export function validateRequest(store: OutboundStore, request: WorkflowRequest):
   if (request.kind === "EMAIL_DISCOVERY") {
     const hasTarget = companies
       .flatMap(({ id }) => store.listContacts(id))
-      .some(({ status, emailStatus }) => status === "APPROVED" && emailStatus === "UNKNOWN");
+      .some(({ status, emailStatus, guessedEmail }) => status === "APPROVED"
+        && (emailStatus === "UNKNOWN" || (emailStatus === "EMAIL_NOT_FOUND" && !guessedEmail)));
     if (!hasTarget) {
-      throw new WorkflowError("Approve at least one contact awaiting email discovery first");
+      throw new WorkflowError("Approve at least one contact awaiting email discovery or a guess first");
     }
   }
   const eligible = store.listEligibleProspects(request.campaignId);

@@ -33,8 +33,11 @@ export function renderEmailResults(
     }
     const status = contact.emailStatus === "EMAIL_NOT_FOUND" ? "Email not found"
       : contact.emailStatus === "PUBLICLY_LISTED" ? "Publicly listed" : "Verified";
-    return `<tr><td><strong>${escapeHtml(contact.name)}</strong></td><td>${escapeHtml(company?.name ?? "Unknown company")}</td><td>${contact.email ? `<strong>${escapeHtml(contact.email)}</strong>` : '<span class="muted">Not found</span>'}</td><td><span class="badge ${contact.emailStatus}">${status}</span></td><td class="source">${source}</td></tr>`;
+    const guess = contact.guessedEmail
+      ? `<strong>${escapeHtml(contact.guessedEmail)}</strong><br><span class="badge UNKNOWN">Guessed · ${escapeHtml(contact.guessedEmailConfidence?.replaceAll("_", " ") ?? "Unknown")}</span><br><span class="muted">${escapeHtml(contact.guessedEmailPattern)} — ${escapeHtml(contact.guessedEmailBasis)}</span>${contact.guessedEmailSourceUrl ? `<br><a href="${escapeHtml(contact.guessedEmailSourceUrl)}" target="_blank" rel="noreferrer">Pattern evidence ↗</a>` : ""}`
+      : '<span class="muted">—</span>';
+    return `<tr><td><strong>${escapeHtml(contact.name)}</strong></td><td>${escapeHtml(company?.name ?? "Unknown company")}</td><td>${contact.email ? `<strong>${escapeHtml(contact.email)}</strong>` : '<span class="muted">Not found</span>'}</td><td>${guess}</td><td><span class="badge ${contact.emailStatus}">${status}</span></td><td class="source">${source}</td></tr>`;
   }).join("");
 
-  return `<div class="tablewrap"><table class="email-results" aria-label="Email discovery results"><thead><tr><th>Contact</th><th>Company</th><th>Business email</th><th>Discovery status</th><th>Email source</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `<div class="tablewrap"><table class="email-results" aria-label="Email discovery results"><thead><tr><th>Contact</th><th>Company</th><th>Business email</th><th>Guessed email</th><th>Discovery status</th><th>Email source</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }

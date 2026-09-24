@@ -30,6 +30,15 @@ describe("Email discovery results", () => {
       assert.match(notFound, /Email not found/);
       assert.doesNotMatch(notFound, /pat@example.com/);
       assert.doesNotMatch(notFound, /email-evidence/);
+
+      store.recordEmailGuess({ contactId: contact.id, guessedEmail: "pat@example.com",
+        pattern: "firstname", confidence: "COMMON_PATTERN",
+        basis: "Verified name maps to the common first-name pattern" });
+      const guessed = renderEmailResults([company], store.listContacts(company.id), store.listResearch(company.id));
+      assert.match(guessed, /Guessed email/);
+      assert.match(guessed, /pat@example.com/);
+      assert.match(guessed, /COMMON PATTERN/);
+      assert.match(guessed, /Email not found/);
     } finally { db.close(); }
   });
 

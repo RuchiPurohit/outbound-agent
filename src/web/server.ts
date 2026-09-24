@@ -49,6 +49,12 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
     '<table class="company-results"><thead><tr><th></th><th>Company</th><th>Fit</th>');
   body = body.replaceAll('name="targetCount" type="number" min="1" max="25"',
     'name="targetCount" type="number" min="1" max="30"');
+  body = body.replace(
+    "Only approved contacts with an unknown email status are checked. Inferred addresses are never stored as verified.",
+    "Approved contacts awaiting discovery are checked; earlier EMAIL_NOT_FOUND results can receive a separate guess. Guesses remain EMAIL_NOT_FOUND and are never sendable.",
+  );
+  body = body.replace(">Find public emails</button>", ">Find emails / guesses</button>");
+  body = body.replace("approved contact(s) awaiting discovery", "approved contact(s) awaiting email check or guess");
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)} · Outbound</title>${options.refreshing ? '<meta http-equiv="refresh" content="3">' : ""}
@@ -129,8 +135,9 @@ function campaignPage(campaign: Campaign, url: URL): string {
   const approvedCompanies = companies.filter(({ status }) => status === "APPROVED").length;
   const approvedContacts = contacts.filter(({ status }) => status === "APPROVED").length;
   const emailComplete = contacts.filter(({ emailStatus }) => emailStatus !== "UNKNOWN").length;
-  const contactsAwaitingEmail = contacts.filter(({ status, emailStatus }) =>
-    status === "APPROVED" && emailStatus === "UNKNOWN").length;
+  const contactsAwaitingEmail = contacts.filter(({ status, emailStatus, guessedEmail }) =>
+    status === "APPROVED"
+      && (emailStatus === "UNKNOWN" || (emailStatus === "EMAIL_NOT_FOUND" && !guessedEmail))).length;
 
   const companyRows = companies.map((company) => {
     const signal = sourceFor(research, company.id);

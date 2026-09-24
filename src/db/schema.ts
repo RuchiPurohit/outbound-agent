@@ -337,4 +337,16 @@ export const migrations: readonly string[] = [
     ALTER TABLE companies ADD COLUMN chat_vendor_name TEXT;
     ALTER TABLE companies ADD COLUMN chat_implementation_source_url TEXT;
   `,
+  `
+    ALTER TABLE contacts ADD COLUMN guessed_email TEXT;
+    ALTER TABLE contacts ADD COLUMN guessed_email_pattern TEXT
+      CHECK (guessed_email_pattern IS NULL OR guessed_email_pattern IN
+        ('firstname', 'firstname.lastname', 'firstnamelastname',
+         'firstinitiallastname', 'firstname_lastname'));
+    ALTER TABLE contacts ADD COLUMN guessed_email_confidence TEXT
+      CHECK (guessed_email_confidence IS NULL OR guessed_email_confidence IN
+        ('PATTERN_SUPPORTED', 'COMMON_PATTERN', 'AMBIGUOUS'));
+    ALTER TABLE contacts ADD COLUMN guessed_email_basis TEXT;
+    ALTER TABLE contacts ADD COLUMN guessed_email_source_url TEXT;
+  `,
 ];

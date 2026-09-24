@@ -123,7 +123,7 @@ describe("OutboundStore", () => {
     diskDb.close();
     const reopenedDb = openDatabase(filename);
     assert.equal(new OutboundStore(reopenedDb).getCampaign(campaign.id)?.name, "Disk campaign");
-    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 8);
+    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 9);
     reopenedDb.close();
     rmSync(directory, { recursive: true });
   });
@@ -207,6 +207,50 @@ describe("OutboundStore", () => {
       contactId: contact.id,
       emailStatus: "EMAIL_NOT_FOUND",
     }).emailStatus, "EMAIL_NOT_FOUND");
+  });
+
+  it("stores email guesses separately without making them sendable", () => {
+    const { company } = campaignAndCompany();
+    store.reviewCompany(company.id, "APPROVED");
+    const contact = store.createContact({ companyId: company.id, name: "Pat Lee" });
+    store.reviewContact(contact.id, "APPROVED");
+
+    assert.throws(() => store.recordEmailGuess({ contactId: contact.id,
+      guessedEmail: "pat@example.com", pattern: "firstname", confidence: "COMMON_PATTERN",
+      basis: "Common first-name pattern" }), /EMAIL_NOT_FOUND/);
+
+    store.recordEmailDiscovery({ contactId: contact.id, emailStatus: "EMAIL_NOT_FOUND" });
+    const guessed = store.recordEmailGuess({ contactId: contact.id,
+      guessedEmail: "pat@example.com", pattern: "firstname", confidence: "COMMON_PATTERN",
+      basis: "Verified name maps cleanly to a common first-name pattern" });
+    assert.equal(guessed.email, null);
+    assert.equal(guessed.emailStatus, "EMAIL_NOT_FOUND");
+    assert.equal(guessed.guessedEmail, "pat@example.com");
+    assert.equal(guessed.guessedEmailPattern, "firstname");
+    assert.equal(guessed.guessedEmailConfidence, "COMMON_PATTERN");
+    assert.deepEqual(store.listEligibleProspects(company.campaignId), []);
+
+    assert.throws(() => store.recordEmailGuess({ contactId: contact.id,
+      guessedEmail: "pat@other.test", pattern: "firstname", confidence: "COMMON_PATTERN",
+      basis: "Wrong domain" }), /company domain/);
+    assert.throws(() => store.recordEmailGuess({ contactId: contact.id,
+      guessedEmail: "pat@example.com", pattern: "firstname", confidence: "PATTERN_SUPPORTED",
+      basis: "Claims support without evidence" }), /source URL/);
+    assert.throws(() => store.recordEmailGuess({ contactId: contact.id,
+      guessedEmail: "pat@example.com", pattern: "firstname", confidence: "COMMON_PATTERN",
+      basis: "Unexpected source", sourceUrl: "https://example.com/team" }), /only valid/);
+
+    const supported = store.recordEmailGuess({ contactId: contact.id,
+      guessedEmail: "pat@example.com", pattern: "firstname", confidence: "PATTERN_SUPPORTED",
+      basis: "A public same-domain employee address demonstrates this pattern",
+      sourceUrl: "https://example.com/team" });
+    assert.equal(supported.guessedEmailSourceUrl, "https://example.com/team");
+
+    const found = store.recordEmailDiscovery({ contactId: contact.id,
+      emailStatus: "PUBLICLY_LISTED", email: "pat.lee@example.com",
+      sourceUrl: "https://example.com/pat" });
+    assert.equal(found.guessedEmail, null);
+    assert.equal(found.guessedEmailConfidence, null);
   });
 
   it("enforces the outreach approval state machine", () => {

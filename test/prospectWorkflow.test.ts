@@ -35,6 +35,23 @@ async function waitForRuns(store: OutboundStore, count: number): Promise<void> {
 }
 
 describe("Prospect workflow", () => {
+  it("allows guess-only completion for an approved EMAIL_NOT_FOUND contact", () => {
+    const { db, store, campaign, contact } = fixture();
+    try {
+      store.recordEmailDiscovery({ contactId: contact.id, emailStatus: "EMAIL_NOT_FOUND" });
+      assert.doesNotThrow(() => validateRequest(store, {
+        campaignId: campaign.id, kind: "EMAIL_DISCOVERY",
+      }));
+      store.recordEmailGuess({ contactId: contact.id, guessedEmail: "pat@example.com",
+        pattern: "firstname", confidence: "COMMON_PATTERN",
+        basis: "Verified name maps cleanly to a common first-name pattern" });
+      assert.throws(() => validateRequest(store, {
+        campaignId: campaign.id, kind: "EMAIL_DISCOVERY",
+      }), /awaiting email discovery or a guess/);
+      assert.deepEqual(store.listEligibleProspects(campaign.id), []);
+    } finally { db.close(); }
+  });
+
   it("distinguishes research prerequisites, ready prospects, and research in progress", () => {
     const { db, store, campaign, email } = fixture();
     try {
