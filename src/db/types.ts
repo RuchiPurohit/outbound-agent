@@ -98,6 +98,7 @@ export type DeliveryStatus = "PREPARING" | "SENDING" | "SENT" | "FAILED" | "UNCE
 
 export interface EmailDelivery {
   id: string;
+  provider: string;
   outreachId: number | null;
   kind: "OUTREACH" | "TEST";
   fromEmail: string;
@@ -105,6 +106,7 @@ export interface EmailDelivery {
   subject: string;
   body: string;
   status: DeliveryStatus;
+  providerReceipt: string | null;
   gmailMessageId: string | null;
   gmailThreadId: string | null;
   error: string | null;

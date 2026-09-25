@@ -143,12 +143,17 @@ the existing `data/campaign-*.md` ignore pattern.
 
 ### Gmail sending
 
-Follow [Gmail setup](docs/GMAIL_SETUP.md) to connect `aiwithruchi@gmail.com`.
-The dashboard's **Gmail** page provides a separate, clearly labeled test email
-to `abstract.ruch@gmail.com`. No prospect outreach state changes during a test.
+Follow [Gmail setup](docs/GMAIL_SETUP.md) to configure a Gmail sender. The
+dashboard's **Email connections** page provides separate Gmail and Custom Mail
+MCP connection buttons and a clearly labeled test email. No prospect outreach
+state changes during a test.
 
 For an approved email, expand it under **Emails**, click **Review & send via
 Gmail**, check the exact sender, recipient, subject, and body, then confirm.
 Successful delivery stores Gmail message/thread IDs and marks the email `SENT`.
 Uncertain delivery blocks another send to avoid duplicates; no automatic
 retries or automatic sending are implemented.
+
+The same guarded send pipeline can alternatively use a compatible Custom Mail
+MCP through dashboard-managed OAuth. Gmail remains the default. See
+[MCP email setup](docs/MCP_EMAIL_SETUP.md).

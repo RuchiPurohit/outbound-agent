@@ -31,7 +31,7 @@ it("migrates version 4 without losing existing outreach or workflow output", () 
     assert.equal(store.getOutreach(1)?.researchId, null);
     assert.equal(store.getWorkflowRun(1)?.output, "Existing output");
     assert.deepEqual(db.pragma("foreign_key_check"), []);
-    assert.equal(db.pragma("user_version", { simple: true }), 9);
+    assert.equal(db.pragma("user_version", { simple: true }), 11);
     assert.equal(store.getCompany(1)?.chatFeatureStatus, "UNKNOWN");
     assert.equal(store.getCompany(1)?.chatFeatureSourceUrl, null);
     assert.equal(store.getCompany(1)?.chatImplementation, "UNKNOWN");
@@ -68,6 +68,6 @@ it("migrates version 7 company chat evidence without changing historic scores", 
     assert.equal(company.chatImplementation, "UNKNOWN");
     assert.equal(company.engineeringHeadcount, null);
     assert.deepEqual(db.pragma("foreign_key_check"), []);
-    assert.equal(db.pragma("user_version", { simple: true }), 9);
+    assert.equal(db.pragma("user_version", { simple: true }), 11);
   } finally { db.close(); rmSync(directory, { recursive: true }); }
 });

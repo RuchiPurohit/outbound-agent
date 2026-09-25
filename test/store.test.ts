@@ -123,7 +123,7 @@ describe("OutboundStore", () => {
     diskDb.close();
     const reopenedDb = openDatabase(filename);
     assert.equal(new OutboundStore(reopenedDb).getCampaign(campaign.id)?.name, "Disk campaign");
-    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 9);
+    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 11);
     reopenedDb.close();
     rmSync(directory, { recursive: true });
   });

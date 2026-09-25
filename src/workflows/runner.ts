@@ -18,8 +18,8 @@ export function buildPrompt(request: WorkflowRequest): string {
   return [instructions,
     `Use SQLite file ${process.env.OUTBOUND_DB_PATH ?? "data/outbound.sqlite"}; this overrides runbook database paths.`,
     "Use existing store operations. Do not change source code, schemas, runbooks, or approval states.",
-    "Never send messages or create Gmail drafts. Human review happens in the dashboard.",
-    "Never read .env files, Gmail OAuth credential files, or tokens. Never call Gmail send operations.",
+    "Never send messages or create email-provider drafts. Human review happens in the dashboard.",
+    "Never read .env files, email OAuth credential files, or tokens. Never call email send operations.",
   ].join(" ");
 }
 
@@ -170,7 +170,8 @@ export function launchWorkflow(
       "--search", "-C", process.cwd(), "--sandbox", "workspace-write",
       "--ask-for-approval", "never", "exec", buildPrompt(request),
     ], { stdio: ["ignore", "pipe", "pipe"], env: Object.fromEntries(Object.entries(process.env)
-      .filter(([key]) => !key.startsWith("GOOGLE_") && !key.startsWith("GMAIL_"))) });
+      .filter(([key]) => !key.startsWith("GOOGLE_") && !key.startsWith("GMAIL_")
+        && !key.startsWith("MCP_EMAIL_"))) });
   } catch (error) {
     store.failWorkflowRun(run.id, `Unable to start Codex: ${error instanceof Error ? error.message : String(error)}`);
     throw error;

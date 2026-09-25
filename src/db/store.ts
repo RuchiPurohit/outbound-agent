@@ -589,7 +589,7 @@ export class OutboundStore {
 
   beginEmailDelivery(input: {
     id?: string; outreachId?: number; kind: EmailDelivery["kind"];
-    fromEmail: string; toEmail: string; subject: string; body: string;
+    provider?: string; fromEmail: string; toEmail: string; subject: string; body: string;
   }): EmailDelivery {
     return this.db.transaction(() => {
       const id = input.id ?? randomUUID();
@@ -606,9 +606,10 @@ export class OutboundStore {
         throw new WorkflowError("Test emails cannot be attached to prospect outreach");
       }
       this.db.prepare(`INSERT INTO email_deliveries
-        (id, outreach_id, kind, from_email, to_email, subject, body, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'PREPARING', ?)`)
-        .run(id, input.outreachId ?? null, input.kind, input.fromEmail, input.toEmail, input.subject, input.body, now());
+        (id, outreach_id, kind, provider, from_email, to_email, subject, body, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PREPARING', ?)`)
+        .run(id, input.outreachId ?? null, input.kind, input.provider ?? "gmail",
+          input.fromEmail, input.toEmail, input.subject, input.body, now());
       return this.getEmailDelivery(id)!;
     })();
   }
@@ -629,20 +630,21 @@ export class OutboundStore {
     if (!changed) throw new WorkflowError("Only a new send attempt may be dispatched");
   }
 
-  completeEmailDelivery(id: string, result: { messageId: string; threadId: string }): EmailDelivery {
+  completeEmailDelivery(id: string, result: { receiptId: string; messageId?: string; threadId?: string }): EmailDelivery {
     return this.db.transaction(() => {
       const delivery = this.getEmailDelivery(id);
       if (!delivery || !["SENDING", "UNCERTAIN"].includes(delivery.status)) {
-        throw new WorkflowError("Send attempt is not awaiting a Gmail result");
+        throw new WorkflowError("Send attempt is not awaiting an email provider result");
       }
-      if (!result.messageId || !result.threadId) throw new WorkflowError("Gmail must confirm message and thread IDs");
+      if (!result.receiptId) throw new WorkflowError("Email provider must confirm a delivery receipt");
       const sentAt = now();
-      this.db.prepare(`UPDATE email_deliveries SET status = 'SENT', gmail_message_id = ?, gmail_thread_id = ?,
-        finished_at = ?, error = NULL WHERE id = ?`).run(result.messageId, result.threadId, sentAt, id);
+      this.db.prepare(`UPDATE email_deliveries SET status = 'SENT', provider_receipt = ?,
+        gmail_message_id = ?, gmail_thread_id = ?, finished_at = ?, error = NULL WHERE id = ?`)
+        .run(result.receiptId, result.messageId ?? null, result.threadId ?? null, sentAt, id);
       if (delivery.outreachId !== null) {
-        // Record what Gmail actually accepted; do not re-check approvals after dispatch.
+        // Record what the provider actually accepted; do not re-check approvals after dispatch.
         this.db.prepare("UPDATE outreach SET status = 'SENT', sent_at = ?, gmail_thread_id = ? WHERE id = ?")
-          .run(sentAt, result.threadId, delivery.outreachId);
+          .run(sentAt, result.threadId ?? null, delivery.outreachId);
       }
       return this.getEmailDelivery(id)!;
     })();
@@ -655,7 +657,7 @@ export class OutboundStore {
 
   recoverInterruptedDeliveries(): number {
     return this.db.prepare(`UPDATE email_deliveries SET status = 'UNCERTAIN',
-      error = 'Dashboard stopped during delivery. Check Gmail Sent before taking further action.', finished_at = ?
+      error = 'Dashboard stopped during delivery. Check the sender Sent folder before taking further action.', finished_at = ?
       WHERE status IN ('PREPARING', 'SENDING')`).run(now()).changes;
   }
 
@@ -894,10 +896,11 @@ function outreachFromRow(row: Row): Outreach {
 }
 function emailDeliveryFromRow(row: Row): EmailDelivery {
   return {
-    id: text(row, "id"), outreachId: nullableInteger(row, "outreach_id"),
+    id: text(row, "id"), provider: text(row, "provider"), outreachId: nullableInteger(row, "outreach_id"),
     kind: text(row, "kind") as EmailDelivery["kind"], fromEmail: text(row, "from_email"),
     toEmail: text(row, "to_email"), subject: text(row, "subject"), body: text(row, "body"),
-    status: text(row, "status") as EmailDelivery["status"], gmailMessageId: nullableText(row, "gmail_message_id"),
+    status: text(row, "status") as EmailDelivery["status"], providerReceipt: nullableText(row, "provider_receipt"),
+    gmailMessageId: nullableText(row, "gmail_message_id"),
     gmailThreadId: nullableText(row, "gmail_thread_id"), error: nullableText(row, "error"),
     createdAt: text(row, "created_at"), finishedAt: nullableText(row, "finished_at"),
   };

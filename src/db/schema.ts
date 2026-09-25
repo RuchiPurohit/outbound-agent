@@ -349,4 +349,46 @@ export const migrations: readonly string[] = [
     ALTER TABLE contacts ADD COLUMN guessed_email_basis TEXT;
     ALTER TABLE contacts ADD COLUMN guessed_email_source_url TEXT;
   `,
+  `
+    ALTER TABLE email_deliveries ADD COLUMN provider TEXT NOT NULL DEFAULT 'gmail'
+      CHECK (length(trim(provider)) > 0);
+  `,
+  `
+    DROP INDEX email_deliveries_created_idx;
+    DROP INDEX email_deliveries_outreach_guard_idx;
+    ALTER TABLE email_deliveries RENAME TO email_deliveries_v10;
+
+    CREATE TABLE email_deliveries (
+      id TEXT PRIMARY KEY,
+      outreach_id INTEGER REFERENCES outreach(id),
+      kind TEXT NOT NULL CHECK (kind IN ('OUTREACH', 'TEST')),
+      provider TEXT NOT NULL DEFAULT 'gmail' CHECK (length(trim(provider)) > 0),
+      from_email TEXT NOT NULL,
+      to_email TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'PREPARING'
+        CHECK (status IN ('PREPARING', 'SENDING', 'SENT', 'FAILED', 'UNCERTAIN')),
+      provider_receipt TEXT,
+      gmail_message_id TEXT,
+      gmail_thread_id TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      finished_at TEXT,
+      CHECK ((kind = 'OUTREACH' AND outreach_id IS NOT NULL)
+        OR (kind = 'TEST' AND outreach_id IS NULL)),
+      CHECK (status != 'SENT' OR provider_receipt IS NOT NULL)
+    ) STRICT;
+    INSERT INTO email_deliveries
+      (id, outreach_id, kind, provider, from_email, to_email, subject, body, status,
+       provider_receipt, gmail_message_id, gmail_thread_id, error, created_at, finished_at)
+    SELECT id, outreach_id, kind, provider, from_email, to_email, subject, body, status,
+      CASE WHEN status = 'SENT' THEN gmail_message_id ELSE NULL END,
+      gmail_message_id, gmail_thread_id, error, created_at, finished_at
+    FROM email_deliveries_v10;
+    DROP TABLE email_deliveries_v10;
+    CREATE INDEX email_deliveries_created_idx ON email_deliveries(created_at DESC);
+    CREATE UNIQUE INDEX email_deliveries_outreach_guard_idx ON email_deliveries(outreach_id)
+      WHERE outreach_id IS NOT NULL AND status IN ('PREPARING', 'SENDING', 'SENT', 'UNCERTAIN');
+  `,
 ];

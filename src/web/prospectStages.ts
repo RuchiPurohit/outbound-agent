@@ -13,6 +13,7 @@ export function renderProspectStages(
   const researchEligible = store.listResearchEligibleProspects(campaignId);
   const activeRuns = store.listWorkflowRuns().filter(({ status }) => status === "RUNNING" || status === "PENDING");
   const active = activeRuns.length > 0;
+  const transportLabel = process.env.EMAIL_TRANSPORT === "mcp" ? "Custom Mail MCP" : "Gmail";
   const researchPending = researchEligible.filter(({ id }) => !store.getProspectResearch(id));
   const draftPending = eligible.filter(({ id }) => store.getProspectResearch(id)?.status === "READY"
     && store.listOutreach(id).length === 0);
@@ -62,10 +63,10 @@ export function renderProspectStages(
         ? `<div class="notice">Delivery ${delivery.status.toLowerCase()}. ${escapeHtml(delivery.error ?? "Wait for Gmail confirmation. Sending again is blocked.")}</div>`
         : `${delivery?.error ? `<div class="notice error">${escapeHtml(delivery.error)}</div>` : ""}${approvalMatches
           ? active ? '<p class="muted">Wait for the active workflow before sending.</p>'
-            : `<a class="button" href="/campaigns/${campaignId}/outreach/${draft.id}/send">Review &amp; send via Gmail</a>`
+            : `<a class="button" href="/campaigns/${campaignId}/outreach/${draft.id}/send">Review &amp; send via ${escapeHtml(transportLabel)}</a>`
           : '<div class="notice">This email needs fresh approval before sending because its recipient or content was not captured by the original approval.</div>'}<form method="post" action="/campaigns/${campaignId}/outreach/${draft.id}/restore" style="margin-top:12px"><button class="secondary" ${active ? "disabled" : ""}>Return to draft for review</button></form>`
       : delivery?.status === "SENT"
-        ? `<p class="muted">Sent from ${escapeHtml(delivery.fromEmail)} · ${escapeHtml(delivery.finishedAt)}<br>Gmail message: ${escapeHtml(delivery.gmailMessageId)} · Thread: ${escapeHtml(delivery.gmailThreadId)}</p>` : "";
+        ? `<p class="muted">Sent from ${escapeHtml(delivery.fromEmail)} via ${escapeHtml(delivery.provider)} · ${escapeHtml(delivery.finishedAt)}<br>Provider message: ${escapeHtml(delivery.gmailMessageId)} · Thread: ${escapeHtml(delivery.gmailThreadId)}</p>` : "";
     return `<details class="email-draft" id="email-${draft.id}"${draft.id === selectedDraftId ? " open" : ""}><summary>${escapeHtml(contact.name)} · ${escapeHtml(company.name)} · ${escapeHtml(draft.subject)} <span class="badge ${draft.status}">${escapeHtml(draft.status.replaceAll("_", " "))}</span></summary><p><strong>To:</strong> ${escapeHtml(delivery?.toEmail ?? draft.approvedRecipient ?? recipient?.address ?? "No email")}${recipient?.guessed ? ' <span class="badge UNKNOWN">Guessed</span>' : ""} · ${escapeHtml(contact.title)}</p>${guessedWarning}<p><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p><pre class="email-preview">${escapeHtml(draft.body)}</pre>${signal ? `<p class="muted"><strong>Cited signal:</strong> ${escapeHtml(signal.signal)} <a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noreferrer">Source ↗</a></p>` : '<div class="notice error">This legacy draft has no linked prospect signal and cannot be approved. Reject it or complete research and request a rewrite.</div>'}${reviewControls}${sendControls}</details>`;
   }).join("");
   const emailEmptyMessage = draftPending.length
