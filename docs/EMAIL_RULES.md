@@ -67,7 +67,8 @@ one of these qualifiers or when the email would require false factual claims.
 ## First-touch email
 
 - Prefer 80–100 words including the signature; never exceed 140 words.
-- Use a short, specific subject without clickbait or fabricated familiarity.
+- Use a short, specific subject that includes the prospect company's name,
+  without clickbait or fabricated familiarity.
 - Open with `Hi <first name>,` on its own line. Do not use `<name> —` as the
   greeting and do not add a generic pleasantry.
 - Begin the first paragraph with the prospect-specific observation, not an
