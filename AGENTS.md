@@ -143,10 +143,12 @@ technical founder / engineer speaking to another engineer.
 
 Structure:
 
-1. Relevant researched signal.
-2. Why it creates a potential problem.
-3. How our product relates.
-4. Low-friction CTA.
+1. `Hi <first name>,` greeting.
+2. Relevant researched signal.
+3. Concrete, conditional business use case.
+4. Two-engineer context and how verified ConvoKit capabilities relate.
+5. Low-friction invitation to a quick 10-minute call.
+6. `Ruchi` and `convokit.app` on separate signature lines.
 
 Never invent personalization.
 

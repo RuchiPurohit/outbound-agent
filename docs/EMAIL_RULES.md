@@ -68,26 +68,65 @@ one of these qualifiers or when the email would require false factual claims.
 
 - Prefer 80–100 words including the signature; never exceed 140 words.
 - Use a short, specific subject without clickbait or fabricated familiarity.
-- Begin with the prospect-specific observation, not an introduction.
+- Open with `Hi <first name>,` on its own line. Do not use `<name> —` as the
+  greeting and do not add a generic pleasantry.
+- Begin the first paragraph with the prospect-specific observation, not an
+  introduction.
 - Reference exactly one verified prospect research signal in the body. Store
   that signal's research ID with the draft.
-- Make the specific messaging problem or opportunity understandable within the
-  first two sentences.
+- Follow the observation with a separate, concrete business-use-case paragraph.
+  Explain who could communicate with whom, around what workflow or object, and
+  why that interaction belongs inside the product. Keep it conditional unless
+  the use case is already verified.
 - For Type A, mention only 2–4 currently verified capabilities relevant to the
   existing messaging surface and acknowledge that the prospect controls its UI.
 - For Type B, describe the concrete user-to-user interaction and use conditional
   language such as “It made me wonder whether…”, “may”, or “could”. Sell the
   workflow rather than generic “chat” or “engagement.”
-- End with one low-pressure invitation to a 15-minute conversation, varied to
-  fit the prospect.
-- Sign as Ruchi. Never invent previous contact or a personal relationship.
+- In a separate paragraph, establish the sender context naturally: ConvoKit is
+  being built by two engineers who understand the infrastructure beneath chat.
+  Relate only 2–4 verified capabilities to the use case; do not claim security,
+  compliance, or business outcomes that have not been verified.
+- End with one low-pressure invitation to a quick 10-minute conversation to
+  understand how the prospect approaches messaging and whether ConvoKit can
+  help. Do not ask for a 15-minute call or offer API docs as the primary CTA.
+- Use this exact two-line signature:
+
+  ```text
+  Ruchi
+  convokit.app
+  ```
+
+  Never invent previous contact or a personal relationship.
 
 Structure:
 
-1. Specific, sourced product observation.
-2. Specific messaging infrastructure problem or workflow opportunity.
-3. How verified ConvoKit capabilities relate.
-4. A concise 15-minute CTA.
+1. `Hi <first name>,`
+2. Specific, sourced product observation.
+3. A valid, concrete business use case tied to that observation.
+4. Two-engineer context and how verified ConvoKit capabilities relate.
+5. A concise 10-minute call invitation.
+6. `Ruchi` followed by `convokit.app` on the next line.
+
+Model the rhythm on this pattern without copying prospect facts between emails:
+
+```text
+Hi <first name>,
+
+I saw <company> <one verified, specific observation>.
+
+A similar need could arise when <User A> and <User B> need to <interaction>
+around <specific product object or workflow>.
+
+We're two engineers building ConvoKit around the <2–4 relevant, verified>
+layers teams would otherwise maintain themselves.
+
+If that's relevant to the products <company> builds, I'd love to spend 10
+minutes learning how you approach messaging and whether we could help.
+
+Ruchi
+convokit.app
+```
 
 If replacing the company name makes most of the email work for another company,
 rewrite it.
