@@ -321,7 +321,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (!store.getCampaign(campaignId)) throw new WorkflowError("Campaign not found");
     const form = await formData(request);
 
-    const draftAction = action.match(/^outreach\/(\d+)\/(review|rewrite|restore|send)$/);
+    const draftAction = action.match(/^outreach\/(\d+)\/(edit|review|rewrite|restore|send)$/);
     if (draftAction) {
       const outreachId = Number(draftAction[1]);
       const draft = store.getOutreach(outreachId);
@@ -344,6 +344,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         }
         const delivery = await emailSending.sendApproved(outreachId, expected);
         redirect(response, `/campaigns/${campaignId}`, { notice: `Email sent to ${delivery.toEmail}. ${emailTransport.label} receipt ${delivery.providerReceipt}.` }); return;
+      }
+      if (draftAction[2] === "edit") {
+        store.editOutreach(outreachId, { subject: form.get("subject") ?? "", body: form.get("body") ?? "" });
+        redirect(response, `/campaigns/${campaignId}`, { notice: "Draft changes saved. Fresh approval is still required." }); return;
       }
       if (draftAction[2] === "restore") {
         store.withdrawOutreachApproval(outreachId);

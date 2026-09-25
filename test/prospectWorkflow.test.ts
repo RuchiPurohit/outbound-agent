@@ -183,6 +183,10 @@ describe("Prospect workflow", () => {
       assert.match(html, /Pain hypothesis \(not verified\)/);
       assert.match(html, /href="https:\/\/example.com\/jobs"/);
       assert.match(html, /Approve → Ready to send/);
+      assert.match(html, new RegExp(`action="/campaigns/${campaign.id}/outreach/${draft.id}/edit"`));
+      assert.match(html, /name="subject"[^>]*value="Second draft"/);
+      assert.match(html, /name="body"[^>]*>SECOND_BODY<\/textarea>/);
+      assert.match(html, /Save draft changes/);
       assert.match(html, /Request rewrite/);
       assert.match(html, /Reject draft/);
       assert.match(html, /Pat &lt;Lee&gt;/);

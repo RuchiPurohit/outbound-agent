@@ -490,6 +490,23 @@ export class OutboundStore {
     return this.getOutreach(id)!;
   }
 
+  editOutreach(id: number, input: { subject: string; body: string }): Outreach {
+    const draft = this.requireOutreach(id);
+    if (draft.status !== "DRAFT") throw new WorkflowError("Only DRAFT outreach can be edited");
+    const subject = input.subject.trim();
+    const body = input.body.trim();
+    if (!subject || subject.length > 250 || /[\r\n\x00]/.test(subject)) {
+      throw new WorkflowError("Email subject must be nonempty, under 250 characters, and contain no newlines");
+    }
+    if (!body || Buffer.byteLength(body) > 100_000) {
+      throw new WorkflowError("Email body must be nonempty and no larger than 100 KB");
+    }
+    this.db.prepare(`UPDATE outreach SET subject = ?, body = ?, reviewed_at = NULL,
+      approved_recipient = NULL, approved_subject = NULL, approved_body = NULL WHERE id = ?`)
+      .run(subject, body, id);
+    return this.getOutreach(id)!;
+  }
+
   rejectOutreach(id: number): Outreach {
     const draft = this.transitionOutreach(id, "DRAFT", "REJECTED");
     this.db.prepare("UPDATE outreach SET reviewed_at = ? WHERE id = ?").run(now(), id);

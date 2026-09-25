@@ -356,12 +356,18 @@ describe("OutboundStore", () => {
     assert.throws(() => store.createOutreach({ contactId: contact.id, subject: "Hi", body: "Hello", researchId: role.id }), /research signal/);
     const draft = store.createOutreach({ contactId: contact.id, subject: "Hi", body: "Hello", researchId });
     assert.throws(() => store.createOutreach({ contactId: contact.id, subject: "Duplicate", body: "Hello", researchId }), /already exists/);
+    const edited = store.editOutreach(draft.id, { subject: "  Manual subject  ", body: "  Manual body  " });
+    assert.equal(edited.subject, "Manual subject");
+    assert.equal(edited.body, "Manual body");
+    assert.equal(edited.researchId, researchId);
+    assert.throws(() => store.editOutreach(draft.id, { subject: "", body: "Body" }), /subject/);
     store.rewriteOutreach(draft.id, { subject: "Shorter", body: "New draft", researchId });
     assert.equal(store.getOutreach(draft.id)?.status, "DRAFT");
     assert.equal(store.getOutreach(draft.id)?.reviewedAt, null);
     assert.equal(store.approveOutreachForSending(draft.id).status, "READY_TO_SEND");
     assert.ok(store.getOutreach(draft.id)?.reviewedAt);
     assert.equal(store.getOutreach(draft.id)?.sentAt, null);
+    assert.throws(() => store.editOutreach(draft.id, { subject: "Again", body: "Changed" }), /Only DRAFT/);
     assert.throws(() => store.rewriteOutreach(draft.id, { subject: "Again", body: "Changed", researchId }), /Only DRAFT/);
   });
 
