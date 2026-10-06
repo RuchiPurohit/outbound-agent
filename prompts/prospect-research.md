@@ -3,9 +3,11 @@
 Read AGENTS.md and docs/ICP.md. Use the campaign and database supplied by the
 dashboard (default data/outbound.sqlite).
 
-Use `listEligibleProspects(campaignId)` and skip contacts with existing
-`getProspectResearch(contactId)`. Both contact and company must be APPROVED,
-and the contact must have a sourced professional email.
+Use `listResearchEligibleProspects(campaignId)` and skip contacts with existing
+`getProspectResearch(contactId)`. Both contact and company must be APPROVED.
+The contact must have either a sourced professional email or a separately
+stored guessed-email hint. Never treat a guess as public, verified, or
+deliverable; downstream review and send confirmation must keep it labelled.
 
 Research deeply enough for one credible personalization angle. Find at most
 three useful signals: recent product launches, engineering hiring, technical

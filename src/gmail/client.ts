@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import type { EmailMessage, EmailTransport, EmailTransportSession } from "../email/transport.js";
+import { EmailTransportError } from "../email/transport.js";
 
 export const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 const SCOPES = [GMAIL_SEND_SCOPE, "openid", "email"];
@@ -33,11 +35,11 @@ export class FileTokenStore implements TokenStore {
   clear(): void { if (existsSync(this.filename)) unlinkSync(this.filename); }
 }
 
-export class GmailSendError extends Error {
-  constructor(message: string, public readonly uncertain: boolean) { super(message); }
-}
+export class GmailSendError extends EmailTransportError {}
 
-export class GmailClient {
+export class GmailClient implements EmailTransport {
+  readonly id = "gmail";
+  readonly label = "Gmail";
   private readonly pending = new Map<string, { verifier: string; expiresAt: number }>();
   private refreshing?: Promise<GmailTokens>;
   constructor(
@@ -110,7 +112,7 @@ export class GmailClient {
     return token;
   }
 
-  async authorizedSession(): Promise<{ email: string; accessToken: string }> {
+  async authorizedSession(): Promise<EmailTransportSession> {
     const saved = this.tokens.load();
     if (!this.configured() || !saved || saved.clientId !== this.config.clientId) throw new Error("Connect Gmail before sending.");
     if (this.config.expectedSender && saved.email !== this.config.expectedSender) {
@@ -130,12 +132,12 @@ export class GmailClient {
     return { email: current.email, accessToken: current.accessToken };
   }
 
-  async send(session: { accessToken: string }, raw: string): Promise<{ messageId: string; threadId: string }> {
+  async send(session: EmailTransportSession, message: EmailMessage): Promise<{ receiptId: string; messageId: string; threadId: string }> {
     let response: Response;
     try {
       response = await this.request("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
         method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ raw }), signal: AbortSignal.timeout(20_000),
+        body: JSON.stringify({ raw: message.raw }), signal: AbortSignal.timeout(20_000),
       });
     } catch { throw new GmailSendError("Gmail did not confirm delivery. Check Gmail Sent; automatic retry is blocked.", true); }
     if (!response.ok) {
@@ -147,7 +149,7 @@ export class GmailClient {
     try {
       const message = await response.json() as { id?: string; threadId?: string };
       if (typeof message.id !== "string" || !message.id || typeof message.threadId !== "string" || !message.threadId) throw new Error("Incomplete response");
-      return { messageId: message.id, threadId: message.threadId };
+      return { receiptId: message.id, messageId: message.id, threadId: message.threadId };
     } catch { throw new GmailSendError("Gmail returned an incomplete result. Check Gmail Sent; retry is blocked.", true); }
   }
 

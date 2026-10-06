@@ -9,8 +9,10 @@ import { launchWorkflow } from "../workflows/runner.js";
 import { renderEmailResults } from "./emailResults.js";
 import { renderProspectStages } from "./prospectStages.js";
 import { FileTokenStore, GmailClient } from "../gmail/client.js";
-import { GmailSending } from "../gmail/sending.js";
+import { EmailSending } from "../gmail/sending.js";
 import { renderGmailSettings } from "./gmailSettings.js";
+import type { EmailTransport } from "../email/transport.js";
+import { FileMcpTokenStore, McpEmailTransport } from "../email/mcpTransport.js";
 
 config({ quiet: true });
 const databasePath = process.env.OUTBOUND_DB_PATH ?? "data/outbound.sqlite";
@@ -22,12 +24,23 @@ const interrupted = store.failInterruptedWorkflowRuns();
 const interruptedDeliveries = store.recoverInterruptedDeliveries();
 const appOrigin = `http://${host}:${port}`;
 const csrfToken = randomBytes(32).toString("hex");
-const expectedSender = process.env.GMAIL_SENDER_EMAIL ?? "aiwithruchi@gmail.com";
+const expectedSender = process.env.GMAIL_SENDER_EMAIL ?? "";
 const redirectUri = process.env.GMAIL_REDIRECT_URI ?? `${appOrigin}/gmail/callback`;
 const gmail = new GmailClient({ clientId: process.env.GOOGLE_CLIENT_ID ?? "",
-  clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "", redirectUri, expectedSender,
+  clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "", redirectUri, expectedSender: expectedSender || undefined,
 }, new FileTokenStore(join(dirname(databasePath), "gmail-oauth.json")));
-const gmailSending = new GmailSending(store, gmail);
+const mcpEmail = new McpEmailTransport({
+  url: process.env.MCP_EMAIL_URL ?? "",
+  redirectUri: process.env.MCP_EMAIL_REDIRECT_URI ?? `${appOrigin}/gmail/callback`,
+  expectedSender: process.env.MCP_EMAIL_SENDER_EMAIL ?? "",
+  profileTool: process.env.MCP_EMAIL_PROFILE_TOOL ?? "",
+  sendTool: process.env.MCP_EMAIL_SEND_TOOL ?? "",
+  accountId: process.env.MCP_EMAIL_ACCOUNT_ID ?? "",
+}, new FileMcpTokenStore(join(dirname(databasePath), "mcp-email-oauth.json")));
+const emailTransport: EmailTransport = process.env.EMAIL_TRANSPORT === "mcp" ? mcpEmail : gmail;
+const selectedExpectedSender = emailTransport.id === "mcp"
+  ? process.env.MCP_EMAIL_SENDER_EMAIL ?? "" : expectedSender;
+const emailSending = new EmailSending(store, emailTransport);
 const signature = (...values: unknown[]): string => createHmac("sha256", csrfToken)
   .update(JSON.stringify(values)).digest("hex");
 const validSignature = (actual: string | null, expected: string): boolean =>
@@ -49,6 +62,20 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
     '<table class="company-results"><thead><tr><th></th><th>Company</th><th>Fit</th>');
   body = body.replaceAll('name="targetCount" type="number" min="1" max="25"',
     'name="targetCount" type="number" min="1" max="30"');
+  body = body.replace(
+    "Only approved contacts with an unknown email status are checked. Inferred addresses are never stored as verified.",
+    "Approved contacts awaiting discovery are checked; earlier EMAIL_NOT_FOUND results can receive a separate guess. Guesses remain EMAIL_NOT_FOUND and are never sendable.",
+  );
+  body = body.replace(">Find public emails</button>", ">Find emails / guesses</button>");
+  body = body.replace("approved contact(s) awaiting discovery", "approved contact(s) awaiting email check or guess");
+  body = body.replace(
+    '<section class="card span8"><div class="cardhead"><div><span class="eyebrow">Stage 3</span>',
+    '<section class="card span12"><div class="cardhead"><div><span class="eyebrow">Stage 3</span>',
+  );
+  body = body.replace(
+    '<aside class="card span4"><span class="eyebrow">Safety gates</span>',
+    '<aside class="card span12"><span class="eyebrow">Safety gates</span>',
+  );
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)} · Outbound</title>${options.refreshing ? '<meta http-equiv="refresh" content="3">' : ""}
@@ -60,7 +87,7 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
 .email-preview{background:white;color:var(--ink);border:1px solid var(--line);font-family:inherit;font-size:15px;line-height:1.6;max-height:none}
 .badge.READY_TO_SEND{background:var(--green2);color:var(--green)}
 .badge.SENT{background:var(--green2);color:var(--green)}.badge.UNCERTAIN,.badge.SENDING,.badge.PREPARING{background:#f2e5c9;color:var(--amber)}
-</style></head><body><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/gmail">Gmail</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
+</style></head><body><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/gmail">Email connections</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
 <script>document.querySelectorAll('[data-select]').forEach(function(b){b.addEventListener('click',function(){b.closest('form').querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function(c){c.checked=true})})})</script></body></html>`;
 }
 
@@ -129,8 +156,9 @@ function campaignPage(campaign: Campaign, url: URL): string {
   const approvedCompanies = companies.filter(({ status }) => status === "APPROVED").length;
   const approvedContacts = contacts.filter(({ status }) => status === "APPROVED").length;
   const emailComplete = contacts.filter(({ emailStatus }) => emailStatus !== "UNKNOWN").length;
-  const contactsAwaitingEmail = contacts.filter(({ status, emailStatus }) =>
-    status === "APPROVED" && emailStatus === "UNKNOWN").length;
+  const contactsAwaitingEmail = contacts.filter(({ status, emailStatus, guessedEmail }) =>
+    status === "APPROVED"
+      && (emailStatus === "UNKNOWN" || (emailStatus === "EMAIL_NOT_FOUND" && !guessedEmail))).length;
 
   const companyRows = companies.map((company) => {
     const signal = sourceFor(research, company.id);
@@ -165,9 +193,18 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     send(response, 403, layout("Forbidden", '<div class="notice error">Use the local dashboard URL printed in your terminal. Cross-origin requests are not allowed.</div>')); return;
   }
   if (request.method === "GET" && url.pathname === "/gmail") {
-    send(response, 200, layout("Gmail", notices(url) + renderGmailSettings(gmail, store, {
-      recipient: process.env.GMAIL_TEST_RECIPIENT ?? "abstract.ruch@gmail.com", expectedSender,
+    const mcpTools = mcpEmail.connectedEmail()
+      ? await mcpEmail.inspectTools().catch(() => []) : [];
+    send(response, 200, layout("Email connections", notices(url) + renderGmailSettings(store, {
+      providers: [
+        { client: gmail, expectedSender, canSend: true },
+        { client: mcpEmail, expectedSender: process.env.MCP_EMAIL_SENDER_EMAIL ?? "", canSend: mcpEmail.sendConfigured() },
+      ],
+      activeId: emailTransport.id,
+      recipient: process.env.EMAIL_TEST_RECIPIENT ?? process.env.GMAIL_TEST_RECIPIENT ?? "",
+      expectedSender: selectedExpectedSender,
       signTest: (id, sender) => signature("test", id, sender),
+      mcpTools,
     }))); return;
   }
   if (request.method === "POST" && ["/gmail/connect", "/gmail/disconnect", "/gmail/test"].includes(url.pathname)) {
@@ -176,31 +213,57 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       throw new WorkflowError("Wait for active delivery to finish before changing Gmail or sending another test");
     }
     if (url.pathname === "/gmail/connect") {
-      if (redirectUri !== `${appOrigin}/gmail/callback`) throw new WorkflowError("GMAIL_REDIRECT_URI must match the current dashboard origin and /gmail/callback path.");
-      const authorization = gmail.beginAuthorization();
-      response.setHeader("Set-Cookie", `gmail_oauth_state=${authorization.state}; HttpOnly; SameSite=Lax; Max-Age=600; Path=/gmail/callback`);
+      const providerId = form.get("provider");
+      const provider = providerId === "gmail" ? gmail : providerId === "mcp" ? mcpEmail : undefined;
+      if (!provider) throw new WorkflowError("Choose a valid email provider");
+      const mcpRedirectUri = process.env.MCP_EMAIL_REDIRECT_URI ?? `${appOrigin}/gmail/callback`;
+      if (provider.id === "gmail" && redirectUri !== `${appOrigin}/gmail/callback`) {
+        throw new WorkflowError("GMAIL_REDIRECT_URI must match the current dashboard origin and /gmail/callback path.");
+      }
+      if (provider.id === "mcp" && mcpRedirectUri !== `${appOrigin}/gmail/callback`) {
+        throw new WorkflowError("MCP_EMAIL_REDIRECT_URI must match the current dashboard origin and /gmail/callback path.");
+      }
+      const authorization = provider.id === "gmail"
+        ? gmail.beginAuthorization() : await mcpEmail.beginAuthorization();
+      const cookie = provider.id === "gmail" ? "gmail_oauth_state" : "mcp_oauth_state";
+      response.setHeader("Set-Cookie", [
+        `${cookie}=${authorization.state}; HttpOnly; SameSite=Lax; Max-Age=600; Path=/gmail/callback`,
+        `email_oauth_provider=${provider.id}; HttpOnly; SameSite=Lax; Max-Age=600; Path=/gmail/callback`,
+      ]);
       redirect(response, authorization.url); return;
     }
     if (url.pathname === "/gmail/disconnect") {
-      await gmail.disconnect();
-      redirect(response, "/gmail", { notice: "Gmail access revoked and local credentials removed" }); return;
+      const providerId = form.get("provider");
+      const provider = providerId === "gmail" ? gmail : providerId === "mcp" ? mcpEmail : undefined;
+      if (!provider) throw new WorkflowError("Choose a valid email provider");
+      if (provider.id === "gmail") await gmail.disconnect(); else await mcpEmail.disconnect();
+      redirect(response, "/gmail", { notice: `${provider.label} access revoked and local credentials removed` }); return;
     }
-    const sender = gmail.connectedEmail();
+    const sender = emailTransport.connectedEmail();
     const requestId = form.get("requestId") ?? "";
     if (!sender || !validSignature(form.get("testSignature"), signature("test", requestId, sender))
       || form.get("confirm") !== "yes") throw new WorkflowError("Review the test message and explicitly confirm sending it");
-    const delivery = await gmailSending.sendTest(form.get("recipient")?.trim() ?? "", requestId, sender);
-    redirect(response, "/gmail", { notice: `Test email sent to ${delivery.toEmail}. Gmail message ${delivery.gmailMessageId}.` }); return;
+    const delivery = await emailSending.sendTest(form.get("recipient")?.trim() ?? "", requestId, sender);
+    redirect(response, "/gmail", { notice: `Test email sent to ${delivery.toEmail}. ${emailTransport.label} receipt ${delivery.providerReceipt}.` }); return;
   }
   if (request.method === "GET" && url.pathname === "/gmail/callback") {
-    response.setHeader("Set-Cookie", "gmail_oauth_state=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/gmail/callback");
+    const providerId = request.headers.cookie?.match(/(?:^|;\s*)email_oauth_provider=([^;]*)/)?.[1];
+    const provider = providerId === "gmail" ? gmail : providerId === "mcp" ? mcpEmail : undefined;
+    if (!provider) { redirect(response, "/gmail", { error: "Email connection expired. Start the connection again." }); return; }
+    const cookie = provider.id === "gmail" ? "gmail_oauth_state" : "mcp_oauth_state";
+    response.setHeader("Set-Cookie", [
+      `${cookie}=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/gmail/callback`,
+      "email_oauth_provider=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/gmail/callback",
+    ]);
     if (url.searchParams.get("error")) {
-      redirect(response, "/gmail", { error: "Google authorization was not completed. No email was sent." }); return;
+      redirect(response, "/gmail", { error: `${provider.label} authorization was not completed. No email was sent.` }); return;
     }
-    const cookieState = request.headers.cookie?.match(/(?:^|;\s*)gmail_oauth_state=([^;]*)/)?.[1] ?? "";
+    const cookieState = request.headers.cookie?.match(new RegExp(`(?:^|;\\s*)${cookie}=([^;]*)`))?.[1] ?? "";
     try {
-      const email = await gmail.finishAuthorization(url.searchParams.get("code") ?? "", url.searchParams.get("state") ?? "", cookieState);
-      redirect(response, "/gmail", { notice: `Connected ${email}. Review and send the test message below.` }); return;
+      const email = provider.id === "gmail"
+        ? await gmail.finishAuthorization(url.searchParams.get("code") ?? "", url.searchParams.get("state") ?? "", cookieState)
+        : await mcpEmail.finishAuthorization(url.searchParams.get("code") ?? "", url.searchParams.get("state") ?? "", cookieState);
+      redirect(response, "/gmail", { notice: `Connected ${email} to ${provider.label}.` }); return;
     } catch (error) { redirect(response, "/gmail", { error: messageOf(error) }); return; }
   }
 
@@ -211,12 +274,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const draft = store.assertReadyToSend(id);
     const contact = store.getContact(draft.contactId)!;
     if (store.getCompany(contact.companyId)?.campaignId !== campaignId) throw new WorkflowError("Email does not belong to this campaign");
-    const sender = gmail.connectedEmail();
-    if (!sender) { redirect(response, "/gmail", { error: "Connect Gmail before sending approved emails" }); return; }
+    const sender = emailTransport.connectedEmail();
+    if (!sender) { redirect(response, "/gmail", { error: `Configure ${emailTransport.label} before sending approved emails` }); return; }
     const blocked = store.listEmailDeliveries().find((delivery) => delivery.outreachId === id && delivery.status !== "FAILED");
     if (blocked) throw new WorkflowError("Delivery is already active, sent, or uncertain. Do not resend.");
-    const expected = { fromEmail: sender, toEmail: contact.email!, subject: draft.subject, body: draft.body };
-    send(response, 200, layout("Confirm send", `<a href="/campaigns/${campaignId}#draft-review">← Emails</a><section class="card" style="margin-top:18px"><h1>Confirm sending</h1><p><strong>From:</strong> ${escapeHtml(sender)}<br><strong>To:</strong> ${escapeHtml(contact.email)}<br><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p><pre class="email-preview">${escapeHtml(draft.body)}</pre><div class="notice">This sends a real email to this prospect. Sending cannot be undone by this dashboard.</div><form method="post" action="/campaigns/${campaignId}/outreach/${id}/send"><input type="hidden" name="sendSignature" value="${signature("outreach", id, expected)}"><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending this exact approved email to the recipient above.</label><button>Send email now</button></form></section>`)); return;
+    const recipient = store.getContactRecipient(contact.id)!;
+    const expected = { fromEmail: sender, toEmail: recipient.address, subject: draft.subject, body: draft.body };
+    const recipientWarning = recipient.guessed
+      ? `<div class="notice error"><strong>Warning:</strong> ${escapeHtml(recipient.address)} is a guessed, unverified address. It may bounce or belong to someone else.</div>`
+      : "";
+    send(response, 200, layout("Confirm send", `<a href="/campaigns/${campaignId}#draft-review">← Emails</a><section class="card" style="margin-top:18px"><h1>Confirm sending</h1><p><strong>From:</strong> ${escapeHtml(sender)}<br><strong>To:</strong> ${escapeHtml(recipient.address)}${recipient.guessed ? ' <span class="badge UNKNOWN">Guessed</span>' : ""}<br><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p>${recipientWarning}<pre class="email-preview">${escapeHtml(draft.body)}</pre><div class="notice">This sends a real email to this prospect. Sending cannot be undone by this dashboard.</div><form method="post" action="/campaigns/${campaignId}/outreach/${id}/send"><input type="hidden" name="sendSignature" value="${signature("outreach", id, expected)}"><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending this exact approved email to the recipient above${recipient.guessed ? ", knowing the address is guessed and unverified" : ""}.</label><button>Send email now</button></form></section>`)); return;
   }
   if (request.method === "GET" && url.pathname === "/") {
     send(response, 200, dashboardPage(url)); return;
@@ -254,7 +321,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (!store.getCampaign(campaignId)) throw new WorkflowError("Campaign not found");
     const form = await formData(request);
 
-    const draftAction = action.match(/^outreach\/(\d+)\/(review|rewrite|restore|send)$/);
+    const draftAction = action.match(/^outreach\/(\d+)\/(edit|review|rewrite|restore|send)$/);
     if (draftAction) {
       const outreachId = Number(draftAction[1]);
       const draft = store.getOutreach(outreachId);
@@ -267,15 +334,20 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         throw new WorkflowError("Wait for the active workflow to finish before reviewing drafts");
       }
       if (draftAction[2] === "send") {
-        const sender = gmail.connectedEmail();
+        const sender = emailTransport.connectedEmail();
         const current = store.assertReadyToSend(outreachId);
-        const expected = { fromEmail: sender ?? "", toEmail: contact!.email!, subject: current.subject, body: current.body };
+        const recipient = store.getContactRecipient(contact!.id);
+        const expected = { fromEmail: sender ?? "", toEmail: recipient?.address ?? "", subject: current.subject, body: current.body };
         if (!sender || form.get("confirm") !== "yes"
           || !validSignature(form.get("sendSignature"), signature("outreach", outreachId, expected))) {
           throw new WorkflowError("Send confirmation expired or recipient/content changed. Review the email and confirm sending again.");
         }
-        const delivery = await gmailSending.sendApproved(outreachId, expected);
-        redirect(response, `/campaigns/${campaignId}`, { notice: `Email sent to ${delivery.toEmail}. Gmail message ${delivery.gmailMessageId}.` }); return;
+        const delivery = await emailSending.sendApproved(outreachId, expected);
+        redirect(response, `/campaigns/${campaignId}`, { notice: `Email sent to ${delivery.toEmail}. ${emailTransport.label} receipt ${delivery.providerReceipt}.` }); return;
+      }
+      if (draftAction[2] === "edit") {
+        store.editOutreach(outreachId, { subject: form.get("subject") ?? "", body: form.get("body") ?? "" });
+        redirect(response, `/campaigns/${campaignId}`, { notice: "Draft changes saved. Fresh approval is still required." }); return;
       }
       if (draftAction[2] === "restore") {
         store.withdrawOutreachApproval(outreachId);

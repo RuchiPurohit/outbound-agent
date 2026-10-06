@@ -103,9 +103,14 @@ If something cannot be verified, mark it UNKNOWN.
 
 ## Email discovery
 
-Never fabricate or assume an email address.
+Search for a public professional business address before generating any guess.
+An inferred address is never considered public, verified, or sendable. Store at
+most one best guess only after recording `EMAIL_NOT_FOUND`, using the separate
+guess fields and `recordEmailGuess`; never put a guess in `contacts.email`.
 
-An inferred email pattern is not considered verified.
+Prefer a publicly demonstrated same-domain employee pattern. Otherwise use the
+ordered common patterns in `prompts/email-discovery.md`. Record the pattern,
+confidence, and basis. `PATTERN_SUPPORTED` also requires a public source URL.
 
 If no reliable professional business email can be found:
 
@@ -138,10 +143,12 @@ technical founder / engineer speaking to another engineer.
 
 Structure:
 
-1. Relevant researched signal.
-2. Why it creates a potential problem.
-3. How our product relates.
-4. Low-friction CTA.
+1. `Hi <first name>,` greeting.
+2. Relevant researched signal.
+3. Concrete, conditional business use case.
+4. Two-engineer context and how verified ConvoKit capabilities relate.
+5. Low-friction invitation to a quick 10-minute call.
+6. `Ruchi` and `convokit.app` on separate signature lines.
 
 Never invent personalization.
 
@@ -182,10 +189,13 @@ from an email pattern.
 
 Prospect research and email generation are separate dashboard workflows:
 `prompts/prospect-research.md` and `prompts/email-generation.md`.
-Only approved contacts at approved companies with sourced business emails are
-eligible. Keep verified signals separate from pain hypotheses. Every draft
-must link to one of the prospect's sourced signals. Generated and rewritten
-outreach stays DRAFT; only an explicit human dashboard review may approve it.
+Approved contacts at approved companies with either sourced business emails or
+separate guessed-email hints are eligible for prospect research and drafting.
+The user has explicitly accepted the risk of sending to guessed addresses.
+Always label a guessed recipient as unverified during draft review and final
+send confirmation; never relabel it as public or verified. Keep verified signals
+separate from pain hypotheses. Every draft must link to one of the prospect's sourced signals.
+Generated and rewritten outreach stays DRAFT; only an explicit human dashboard review may approve it.
 Never invoke approval operations from a research or generation workflow.
 Research must stop for checklist selection. Generate first-touch drafts only
 for the contact IDs explicitly checked in the dashboard generation request.

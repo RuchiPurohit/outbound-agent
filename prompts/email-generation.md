@@ -10,7 +10,9 @@ checked IDs. An empty or missing selection means no drafting is authorized.
 Never expand the selection to other eligible prospects.
 
 1. Use listEligibleProspects(campaignId). Both company and contact must remain
-   APPROVED, with a PUBLICLY_LISTED or VERIFIED professional business email.
+   APPROVED, with either a PUBLICLY_LISTED/VERIFIED professional business email
+   or a separately stored guessed-email hint. Never describe a guess as sourced,
+   public, verified, or deliverable.
 2. Require getProspectResearch(contactId).status === READY. Skip NO_SIGNAL.
 3. Skip any contact with existing outreach, including rejected or sent outreach.
    Do not duplicate first-touch emails on retry.
@@ -26,6 +28,9 @@ Never expand the selection to other eligible prospects.
    not discard them merely because embedded chat, both participant roles, or
    internal demand are not public. For other LOW-fit prospects, record the skip
    and create no draft.
+   Every first touch must follow the required greeting, sourced-observation,
+   concrete-use-case, two-engineer context, 10-minute CTA, and two-line
+   `Ruchi` / `convokit.app` signature structure in `docs/EMAIL_RULES.md`.
 6. Use createOutreach({contactId, subject, body, researchId}) to store one DRAFT.
    researchId must identify the cited prospect signal, not role/email evidence.
    This workflow creates one first-touch only, not follow-ups.

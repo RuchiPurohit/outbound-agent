@@ -26,6 +26,8 @@ if (campaignId !== undefined && (!Number.isSafeInteger(campaignId) || campaignId
         Status: contact.status,
         Email: contact.email ?? "UNKNOWN",
         EmailStatus: contact.emailStatus,
+        GuessedEmail: contact.guessedEmail ?? "NONE",
+        GuessConfidence: contact.guessedEmailConfidence ?? "NONE",
       }));
 
     if (rows.length === 0) console.log("No contacts found.");

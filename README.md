@@ -64,7 +64,11 @@ SQLite but does not research email addresses or create outreach.
 
 `emails:discover` similarly runs `prompts/email-discovery.md` for approved
 contacts only. It stores sourced outcomes in SQLite and writes a readable report
-to `data/campaign-<id>-emails.md`.
+to `data/campaign-<id>-emails.md`. When no public business address is found, the
+workflow may also show one clearly labeled company-domain guess in a separate
+column. Guesses remain `EMAIL_NOT_FOUND` and are never treated as sourced or
+verified. They may be researched, drafted, approved, and sent only through the
+same explicit human review and final Gmail confirmation used for sourced emails.
 
 If `codex` is not on the shell `PATH`, the command also checks common VS Code,
 VS Code Insiders, Cursor, and Windsurf extension locations. You can override
@@ -109,7 +113,9 @@ how to apply them and report candidates that did not qualify.
 ### Prospect research, drafting, and review
 
 After email discovery, the dashboard automatically researches approved
-prospects at approved companies with sourced business emails. It stores at
+prospects at approved companies with sourced business emails or separate
+guessed-email hints. Guessed recipients remain visibly marked as unverified
+through draft review and final send confirmation. Prospect research stores at
 most three useful signals per contact, the strongest signal, a conditional pain
 hypothesis, and ConvoKit relevance. Prospects without a credible signal are
 marked `NO_SIGNAL` and are not drafted.
@@ -137,12 +143,17 @@ the existing `data/campaign-*.md` ignore pattern.
 
 ### Gmail sending
 
-Follow [Gmail setup](docs/GMAIL_SETUP.md) to connect `aiwithruchi@gmail.com`.
-The dashboard's **Gmail** page provides a separate, clearly labeled test email
-to `abstract.ruch@gmail.com`. No prospect outreach state changes during a test.
+Follow [Gmail setup](docs/GMAIL_SETUP.md) to configure a Gmail sender. The
+dashboard's **Email connections** page provides separate Gmail and Custom Mail
+MCP connection buttons and a clearly labeled test email. No prospect outreach
+state changes during a test.
 
 For an approved email, expand it under **Emails**, click **Review & send via
 Gmail**, check the exact sender, recipient, subject, and body, then confirm.
 Successful delivery stores Gmail message/thread IDs and marks the email `SENT`.
 Uncertain delivery blocks another send to avoid duplicates; no automatic
 retries or automatic sending are implemented.
+
+The same guarded send pipeline can alternatively use a compatible Custom Mail
+MCP through dashboard-managed OAuth. Gmail remains the default. See
+[MCP email setup](docs/MCP_EMAIL_SETUP.md).

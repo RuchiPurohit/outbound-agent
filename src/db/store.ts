@@ -2,7 +2,7 @@ import type { SqliteDatabase } from "./database.js";
 import { randomUUID } from "node:crypto";
 import type {
   Campaign, CampaignStatus, ChatFeatureStatus, ChatImplementation, Company, CompanyScoreBreakdown,
-  Contact, EmailStatus, Outreach, ResearchRecord,
+  Contact, EmailGuessConfidence, EmailGuessPattern, EmailStatus, Outreach, ResearchRecord,
   ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch, EmailDelivery,
 } from "./types.js";
 
@@ -35,6 +35,23 @@ function checkPublicUrl(value: string | null, label: string): void {
   if (!["https:", "http:"].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) {
     throw new WorkflowError(`${label} must be a public HTTP(S) URL`);
   }
+}
+
+function companyEmailDomain(value: string): string {
+  const domain = value.trim().toLowerCase().replace(/^www\./, "");
+  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(domain)) {
+    throw new WorkflowError("Company domain is not valid for an email guess");
+  }
+  return domain;
+}
+
+function checkedGuessedEmail(value: string, companyDomain: string): string {
+  const email = value.trim().toLowerCase();
+  const match = /^([a-z0-9]+(?:[._-][a-z0-9]+)*)@([a-z0-9.-]+)$/.exec(email);
+  if (!match || match[2] !== companyEmailDomain(companyDomain)) {
+    throw new WorkflowError("Guessed email must be a valid address on the company domain");
+  }
+  return email;
 }
 
 export class WorkflowError extends Error {}
@@ -302,7 +319,10 @@ export class OutboundStore {
         throw new WorkflowError("EMAIL_NOT_FOUND cannot include an email address");
       }
 
-      this.db.prepare("UPDATE contacts SET email = ?, email_status = ? WHERE id = ?")
+      this.db.prepare(`UPDATE contacts SET email = ?, email_status = ?,
+        guessed_email = NULL, guessed_email_pattern = NULL,
+        guessed_email_confidence = NULL, guessed_email_basis = NULL,
+        guessed_email_source_url = NULL WHERE id = ?`)
         .run(found ? input.email : null, input.emailStatus, input.contactId);
 
       if (found) {
@@ -316,6 +336,41 @@ export class OutboundStore {
       }
       return this.getContact(input.contactId)!;
     })();
+  }
+
+  recordEmailGuess(input: {
+    contactId: number;
+    guessedEmail: string;
+    pattern: EmailGuessPattern;
+    confidence: EmailGuessConfidence;
+    basis: string;
+    sourceUrl?: string;
+  }): Contact {
+    const contact = this.requireContact(input.contactId);
+    if (contact.status !== "APPROVED") {
+      throw new WorkflowError("Email guessing is only allowed for APPROVED contacts");
+    }
+    if (contact.emailStatus !== "EMAIL_NOT_FOUND" || contact.email) {
+      throw new WorkflowError("An email guess may only follow an EMAIL_NOT_FOUND result");
+    }
+    const company = this.requireCompany(contact.companyId);
+    const guessedEmail = checkedGuessedEmail(input.guessedEmail, company.domain);
+    const basis = input.basis.trim();
+    if (!basis) throw new WorkflowError("An email guess requires a basis");
+    const sourceUrl = input.sourceUrl?.trim() || null;
+    checkPublicUrl(sourceUrl, "Email pattern source");
+    if (input.confidence === "PATTERN_SUPPORTED" && !sourceUrl) {
+      throw new WorkflowError("PATTERN_SUPPORTED guesses require a public pattern source URL");
+    }
+    if (input.confidence !== "PATTERN_SUPPORTED" && sourceUrl) {
+      throw new WorkflowError("A pattern source URL is only valid for PATTERN_SUPPORTED guesses");
+    }
+    this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_pattern = ?,
+      guessed_email_confidence = ?, guessed_email_basis = ?, guessed_email_source_url = ?
+      WHERE id = ?`).run(
+      guessedEmail, input.pattern, input.confidence, basis, sourceUrl, input.contactId,
+    );
+    return this.getContact(input.contactId)!;
   }
 
   reviewContact(id: number, decision: Exclude<ReviewStatus, "DISCOVERED">): Contact {
@@ -340,7 +395,7 @@ export class OutboundStore {
     notes?: string;
   }): ProspectResearch {
     return this.db.transaction(() => {
-      this.requireProspectEligible(input.contactId);
+      this.requireResearchEligible(input.contactId);
       if (this.getProspectResearch(input.contactId)) {
         throw new WorkflowError("Prospect research already exists; do not duplicate completed research");
       }
@@ -392,8 +447,15 @@ export class OutboundStore {
   listEligibleProspects(campaignId: number): Contact[] {
     return this.listCompanies({ campaignId, status: "APPROVED" })
       .flatMap(({ id }) => this.listContacts(id))
-      .filter(({ status, email, emailStatus }) => status === "APPROVED" && email
-        && (emailStatus === "PUBLICLY_LISTED" || emailStatus === "VERIFIED"));
+      .filter((contact) => contact.status === "APPROVED" && !!this.recipientFor(contact));
+  }
+
+  listResearchEligibleProspects(campaignId: number): Contact[] {
+    return this.listEligibleProspects(campaignId);
+  }
+
+  getContactRecipient(contactId: number): { address: string; guessed: boolean } | undefined {
+    return this.recipientFor(this.requireContact(contactId));
   }
 
   createOutreach(input: { contactId: number; subject: string; body: string; researchId?: number }): Outreach {
@@ -428,6 +490,23 @@ export class OutboundStore {
     return this.getOutreach(id)!;
   }
 
+  editOutreach(id: number, input: { subject: string; body: string }): Outreach {
+    const draft = this.requireOutreach(id);
+    if (draft.status !== "DRAFT") throw new WorkflowError("Only DRAFT outreach can be edited");
+    const subject = input.subject.trim();
+    const body = input.body.trim();
+    if (!subject || subject.length > 250 || /[\r\n\x00]/.test(subject)) {
+      throw new WorkflowError("Email subject must be nonempty, under 250 characters, and contain no newlines");
+    }
+    if (!body || Buffer.byteLength(body) > 100_000) {
+      throw new WorkflowError("Email body must be nonempty and no larger than 100 KB");
+    }
+    this.db.prepare(`UPDATE outreach SET subject = ?, body = ?, reviewed_at = NULL,
+      approved_recipient = NULL, approved_subject = NULL, approved_body = NULL WHERE id = ?`)
+      .run(subject, body, id);
+    return this.getOutreach(id)!;
+  }
+
   rejectOutreach(id: number): Outreach {
     const draft = this.transitionOutreach(id, "DRAFT", "REJECTED");
     this.db.prepare("UPDATE outreach SET reviewed_at = ? WHERE id = ?").run(now(), id);
@@ -457,9 +536,10 @@ export class OutboundStore {
     const draft = this.requireOutreach(id);
     this.requireDraftEvidence(draft.contactId, draft.researchId ?? undefined);
     this.transitionOutreach(id, "DRAFT", "APPROVED");
+    const recipient = this.requireContactRecipient(draft.contactId);
     this.db.prepare(`UPDATE outreach
       SET reviewed_at = ?, approved_recipient = ?, approved_subject = ?, approved_body = ? WHERE id = ?`)
-      .run(now(), this.requireContact(draft.contactId).email, draft.subject, draft.body, id);
+      .run(now(), recipient.address, draft.subject, draft.body, id);
     return this.getOutreach(id)!;
   }
 
@@ -501,8 +581,8 @@ export class OutboundStore {
     if (draft.status !== "READY_TO_SEND") throw new WorkflowError("Only READY_TO_SEND emails can be sent");
     this.requireDraftEvidence(draft.contactId, draft.researchId ?? undefined);
     this.assertContactLimit(draft.contactId);
-    const contact = this.requireContact(draft.contactId);
-    if (!draft.reviewedAt || draft.approvedRecipient !== contact.email
+    const recipient = this.requireContactRecipient(draft.contactId);
+    if (!draft.reviewedAt || draft.approvedRecipient !== recipient.address
       || draft.approvedSubject !== draft.subject || draft.approvedBody !== draft.body) {
       throw new WorkflowError("Recipient or content is not covered by the saved approval. Return to draft and approve again.");
     }
@@ -526,7 +606,7 @@ export class OutboundStore {
 
   beginEmailDelivery(input: {
     id?: string; outreachId?: number; kind: EmailDelivery["kind"];
-    fromEmail: string; toEmail: string; subject: string; body: string;
+    provider?: string; fromEmail: string; toEmail: string; subject: string; body: string;
   }): EmailDelivery {
     return this.db.transaction(() => {
       const id = input.id ?? randomUUID();
@@ -543,9 +623,10 @@ export class OutboundStore {
         throw new WorkflowError("Test emails cannot be attached to prospect outreach");
       }
       this.db.prepare(`INSERT INTO email_deliveries
-        (id, outreach_id, kind, from_email, to_email, subject, body, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'PREPARING', ?)`)
-        .run(id, input.outreachId ?? null, input.kind, input.fromEmail, input.toEmail, input.subject, input.body, now());
+        (id, outreach_id, kind, provider, from_email, to_email, subject, body, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PREPARING', ?)`)
+        .run(id, input.outreachId ?? null, input.kind, input.provider ?? "gmail",
+          input.fromEmail, input.toEmail, input.subject, input.body, now());
       return this.getEmailDelivery(id)!;
     })();
   }
@@ -566,20 +647,21 @@ export class OutboundStore {
     if (!changed) throw new WorkflowError("Only a new send attempt may be dispatched");
   }
 
-  completeEmailDelivery(id: string, result: { messageId: string; threadId: string }): EmailDelivery {
+  completeEmailDelivery(id: string, result: { receiptId: string; messageId?: string; threadId?: string }): EmailDelivery {
     return this.db.transaction(() => {
       const delivery = this.getEmailDelivery(id);
       if (!delivery || !["SENDING", "UNCERTAIN"].includes(delivery.status)) {
-        throw new WorkflowError("Send attempt is not awaiting a Gmail result");
+        throw new WorkflowError("Send attempt is not awaiting an email provider result");
       }
-      if (!result.messageId || !result.threadId) throw new WorkflowError("Gmail must confirm message and thread IDs");
+      if (!result.receiptId) throw new WorkflowError("Email provider must confirm a delivery receipt");
       const sentAt = now();
-      this.db.prepare(`UPDATE email_deliveries SET status = 'SENT', gmail_message_id = ?, gmail_thread_id = ?,
-        finished_at = ?, error = NULL WHERE id = ?`).run(result.messageId, result.threadId, sentAt, id);
+      this.db.prepare(`UPDATE email_deliveries SET status = 'SENT', provider_receipt = ?,
+        gmail_message_id = ?, gmail_thread_id = ?, finished_at = ?, error = NULL WHERE id = ?`)
+        .run(result.receiptId, result.messageId ?? null, result.threadId ?? null, sentAt, id);
       if (delivery.outreachId !== null) {
-        // Record what Gmail actually accepted; do not re-check approvals after dispatch.
+        // Record what the provider actually accepted; do not re-check approvals after dispatch.
         this.db.prepare("UPDATE outreach SET status = 'SENT', sent_at = ?, gmail_thread_id = ? WHERE id = ?")
-          .run(sentAt, result.threadId, delivery.outreachId);
+          .run(sentAt, result.threadId ?? null, delivery.outreachId);
       }
       return this.getEmailDelivery(id)!;
     })();
@@ -592,7 +674,7 @@ export class OutboundStore {
 
   recoverInterruptedDeliveries(): number {
     return this.db.prepare(`UPDATE email_deliveries SET status = 'UNCERTAIN',
-      error = 'Dashboard stopped during delivery. Check Gmail Sent before taking further action.', finished_at = ?
+      error = 'Dashboard stopped during delivery. Check the sender Sent folder before taking further action.', finished_at = ?
       WHERE status IN ('PREPARING', 'SENDING')`).run(now()).changes;
   }
 
@@ -702,10 +784,30 @@ export class OutboundStore {
   private requireProspectEligible(contactId: number): Contact {
     this.requireCurrentApprovals(contactId);
     const contact = this.requireContact(contactId);
-    if (!contact.email || !["PUBLICLY_LISTED", "VERIFIED"].includes(contact.emailStatus)) {
-      throw new WorkflowError("Prospect research and drafts require a sourced business email");
-    }
+    this.requireContactRecipient(contactId);
     return contact;
+  }
+
+  private requireResearchEligible(contactId: number): Contact {
+    return this.requireProspectEligible(contactId);
+  }
+
+  private recipientFor(contact: Contact): { address: string; guessed: boolean } | undefined {
+    if (contact.email && ["PUBLICLY_LISTED", "VERIFIED"].includes(contact.emailStatus)) {
+      return { address: contact.email, guessed: false };
+    }
+    if (contact.emailStatus === "EMAIL_NOT_FOUND" && contact.guessedEmail) {
+      return { address: contact.guessedEmail, guessed: true };
+    }
+    return undefined;
+  }
+
+  private requireContactRecipient(contactId: number): { address: string; guessed: boolean } {
+    const recipient = this.getContactRecipient(contactId);
+    if (!recipient) {
+      throw new WorkflowError("Prospect workflow requires a sourced or explicitly guessed business email");
+    }
+    return recipient;
   }
 
   private requireDraftEvidence(contactId: number, researchId: number | undefined): void {
@@ -789,6 +891,11 @@ function contactFromRow(row: Row): Contact {
     title: nullableText(row, "title"), roleCategory: nullableText(row, "role_category"),
     roleScore: nullableInteger(row, "role_score"), linkedinUrl: nullableText(row, "linkedin_url"),
     email: nullableText(row, "email"), emailStatus: text(row, "email_status") as Contact["emailStatus"],
+    guessedEmail: nullableText(row, "guessed_email"),
+    guessedEmailPattern: nullableText(row, "guessed_email_pattern") as Contact["guessedEmailPattern"],
+    guessedEmailConfidence: nullableText(row, "guessed_email_confidence") as Contact["guessedEmailConfidence"],
+    guessedEmailBasis: nullableText(row, "guessed_email_basis"),
+    guessedEmailSourceUrl: nullableText(row, "guessed_email_source_url"),
     status: text(row, "status") as Contact["status"] };
 }
 function researchFromRow(row: Row): ResearchRecord {
@@ -806,10 +913,11 @@ function outreachFromRow(row: Row): Outreach {
 }
 function emailDeliveryFromRow(row: Row): EmailDelivery {
   return {
-    id: text(row, "id"), outreachId: nullableInteger(row, "outreach_id"),
+    id: text(row, "id"), provider: text(row, "provider"), outreachId: nullableInteger(row, "outreach_id"),
     kind: text(row, "kind") as EmailDelivery["kind"], fromEmail: text(row, "from_email"),
     toEmail: text(row, "to_email"), subject: text(row, "subject"), body: text(row, "body"),
-    status: text(row, "status") as EmailDelivery["status"], gmailMessageId: nullableText(row, "gmail_message_id"),
+    status: text(row, "status") as EmailDelivery["status"], providerReceipt: nullableText(row, "provider_receipt"),
+    gmailMessageId: nullableText(row, "gmail_message_id"),
     gmailThreadId: nullableText(row, "gmail_thread_id"), error: nullableText(row, "error"),
     createdAt: text(row, "created_at"), finishedAt: nullableText(row, "finished_at"),
   };

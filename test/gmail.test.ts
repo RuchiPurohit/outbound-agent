@@ -10,8 +10,8 @@ import { OutboundStore } from "../src/db/store.js";
 import { FileTokenStore, GmailClient, GMAIL_SEND_SCOPE, type GmailTokens, type TokenStore } from "../src/gmail/client.js";
 import { composeMessage, GmailSending, TEST_BODY, TEST_SUBJECT } from "../src/gmail/sending.js";
 
-const sender = "aiwithruchi@gmail.com";
-const recipient = "abstract.ruch@gmail.com";
+const sender = "sender@example.com";
+const recipient = "recipient@example.net";
 const config = { clientId: "test-client", clientSecret: "test-secret", redirectUri: "http://127.0.0.1:3000/gmail/callback", expectedSender: sender };
 class MemoryTokens implements TokenStore {
   constructor(public value?: GmailTokens) {}
@@ -64,8 +64,28 @@ describe("Gmail sending", () => {
       const payload = JSON.parse(String(requests[0]!.body)) as { raw: string };
       const mime = Buffer.from(payload.raw, "base64url").toString("utf8");
       assert.match(mime, /To: pat@example.com\r\n/);
-      assert.match(mime, /From: aiwithruchi@gmail.com\r\n/);
+      assert.match(mime, /From: sender@example\.com\r\n/);
       assert.doesNotMatch(mime, /\r\n(?:Cc|Bcc):/);
+    } finally { f.db.close(); }
+  });
+
+  it("sends to a guessed recipient only after draft approval", async () => {
+    const requests: RequestInit[] = [];
+    const f = fixture(async (_url, init) => { requests.push(init!); return success(); }, false);
+    try {
+      f.store.recordEmailDiscovery({ contactId: f.contact.id, emailStatus: "EMAIL_NOT_FOUND" });
+      f.store.recordEmailGuess({ contactId: f.contact.id, guessedEmail: "pat.guessed@example.com",
+        pattern: "firstname.lastname", confidence: "COMMON_PATTERN",
+        basis: "Explicit test guess" });
+      assert.equal(f.store.getOutreach(f.draft.id)?.status, "DRAFT");
+      const approved = f.store.approveOutreachForSending(f.draft.id);
+      assert.equal(approved.approvedRecipient, "pat.guessed@example.com");
+      const expected = { ...f.expected, toEmail: "pat.guessed@example.com" };
+      const delivery = await f.sending.sendApproved(f.draft.id, expected);
+      assert.equal(delivery.toEmail, "pat.guessed@example.com");
+      const payload = JSON.parse(String(requests[0]!.body)) as { raw: string };
+      assert.match(Buffer.from(payload.raw, "base64url").toString("utf8"),
+        /To: pat\.guessed@example\.com\r\n/);
     } finally { f.db.close(); }
   });
 
@@ -145,7 +165,7 @@ describe("Gmail sending", () => {
       assert.equal(delivery.toEmail, recipient);
       assert.equal(delivery.subject, TEST_SUBJECT);
       assert.equal(delivery.body, TEST_BODY);
-      assert.match(mime, /To: abstract.ruch@gmail.com\r\n/);
+      assert.match(mime, /To: recipient@example\.net\r\n/);
       assert.equal(f.store.getOutreach(f.draft.id)?.status, "READY_TO_SEND");
       assert.equal(f.store.getOutreach(f.draft.id)?.sentAt, null);
       await assert.rejects(f.sending.sendTest(recipient, id, sender), /already been submitted/);

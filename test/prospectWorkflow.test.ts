@@ -35,13 +35,34 @@ async function waitForRuns(store: OutboundStore, count: number): Promise<void> {
 }
 
 describe("Prospect workflow", () => {
+  it("allows guess-only completion for an approved EMAIL_NOT_FOUND contact", () => {
+    const { db, store, campaign, contact } = fixture();
+    try {
+      store.recordEmailDiscovery({ contactId: contact.id, emailStatus: "EMAIL_NOT_FOUND" });
+      assert.doesNotThrow(() => validateRequest(store, {
+        campaignId: campaign.id, kind: "EMAIL_DISCOVERY",
+      }));
+      store.recordEmailGuess({ contactId: contact.id, guessedEmail: "pat@example.com",
+        pattern: "firstname", confidence: "COMMON_PATTERN",
+        basis: "Verified name maps cleanly to a common first-name pattern" });
+      assert.doesNotThrow(() => validateRequest(store, {
+        campaignId: campaign.id, kind: "PROSPECT_RESEARCH",
+      }));
+      assert.throws(() => validateRequest(store, {
+        campaignId: campaign.id, kind: "EMAIL_DISCOVERY",
+      }), /awaiting email discovery or a guess/);
+      assert.deepEqual(store.listEligibleProspects(campaign.id).map(({ id }) => id), [contact.id]);
+      assert.deepEqual(store.listResearchEligibleProspects(campaign.id).map(({ id }) => id), [contact.id]);
+    } finally { db.close(); }
+  });
+
   it("distinguishes research prerequisites, ready prospects, and research in progress", () => {
     const { db, store, campaign, email } = fixture();
     try {
       assert.match(renderProspectStages(store, campaign.id), /No eligible prospects are ready for research/);
       email();
       const ready = renderProspectStages(store, campaign.id);
-      assert.match(ready, /Approved prospects with business emails are ready for research/);
+      assert.match(ready, /Approved prospects with sourced or guessed emails are ready for research/);
       assert.match(ready, /Click Run prospect research/);
       assert.doesNotMatch(ready, /then discover their business emails to unlock/);
       const run = store.createWorkflowRun({ campaignId: campaign.id, kind: "EMAIL_DISCOVERY" });
@@ -141,6 +162,9 @@ describe("Prospect workflow", () => {
       email(); research();
       store.createOutreach({ contactId: contact.id, subject: "First draft", body: "FIRST_BODY",
         researchId: store.getProspectResearch(contact.id)!.strongestResearchId! });
+      store.recordEmailDiscovery({ contactId: contact.id, emailStatus: "EMAIL_NOT_FOUND" });
+      store.recordEmailGuess({ contactId: contact.id, guessedEmail: "pat.guessed@example.com",
+        pattern: "firstname.lastname", confidence: "COMMON_PATTERN", basis: "Explicit test guess" });
       const second = store.createContact({ companyId: company.id, name: "Second contact" });
       store.reviewContact(second.id, "APPROVED");
       store.recordEmailDiscovery({ contactId: second.id, emailStatus: "PUBLICLY_LISTED",
@@ -159,9 +183,16 @@ describe("Prospect workflow", () => {
       assert.match(html, /Pain hypothesis \(not verified\)/);
       assert.match(html, /href="https:\/\/example.com\/jobs"/);
       assert.match(html, /Approve → Ready to send/);
+      assert.match(html, new RegExp(`action="/campaigns/${campaign.id}/outreach/${draft.id}/edit"`));
+      assert.match(html, /name="subject"[^>]*value="Second draft"/);
+      assert.match(html, /name="body"[^>]*>SECOND_BODY<\/textarea>/);
+      assert.match(html, /Save draft changes/);
       assert.match(html, /Request rewrite/);
       assert.match(html, /Reject draft/);
       assert.match(html, /Pat &lt;Lee&gt;/);
+      assert.match(html, /Guessed recipient/);
+      assert.match(html, /pat\.guessed@example\.com/);
+      assert.match(html, /bounce or wrong mailbox/);
       assert.match(html, /Approval alone never sends an email/);
     } finally { db.close(); }
   });

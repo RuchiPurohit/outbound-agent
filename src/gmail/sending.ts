@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { OutboundStore } from "../db/store.js";
 import type { EmailDelivery } from "../db/types.js";
-import { GmailClient, GmailSendError } from "./client.js";
+import type { EmailTransport, EmailTransportSession } from "../email/transport.js";
+import { EmailTransportError } from "../email/transport.js";
 
-export const TEST_SUBJECT = "Outbound Agent — Gmail integration test";
+export const TEST_SUBJECT = "Outbound Agent — email transport test";
 export const TEST_BODY = "This is a test email sent manually from the local Outbound Agent dashboard.\n\nNo prospect was contacted, and no campaign outreach state was changed.\n\nRuchi";
 
 export function validateEmail(value: string): string {
@@ -36,21 +37,21 @@ export function composeMessage(input: { id: string; fromEmail: string; toEmail: 
   ].join("\r\n"), "utf8").toString("base64url");
 }
 
-export class GmailSending {
-  constructor(private readonly store: OutboundStore, private readonly gmail: GmailClient) {}
+export class EmailSending {
+  constructor(private readonly store: OutboundStore, private readonly transport: EmailTransport) {}
 
   async sendApproved(outreachId: number, expected: {
     fromEmail: string; toEmail: string; subject: string; body: string;
   }): Promise<EmailDelivery> {
     this.store.assertReadyToSend(outreachId);
-    const session = await this.gmail.authorizedSession();
-    if (session.email !== expected.fromEmail) throw new Error("Connected Gmail account changed. Review the send confirmation again.");
+    const session = await this.transport.authorizedSession();
+    if (session.email !== expected.fromEmail) throw new Error("Connected email account changed. Review the send confirmation again.");
     return this.dispatch({ ...expected, outreachId, kind: "OUTREACH", id: randomUUID() }, session);
   }
 
   async sendTest(toEmail: string, requestId: string, expectedSender: string): Promise<EmailDelivery> {
-    const session = await this.gmail.authorizedSession();
-    if (session.email !== expectedSender) throw new Error("Connected Gmail account changed. Reload the test form.");
+    const session = await this.transport.authorizedSession();
+    if (session.email !== expectedSender) throw new Error("Connected email account changed. Reload the test form.");
     return this.dispatch({ id: requestId, kind: "TEST", fromEmail: session.email,
       toEmail, subject: TEST_SUBJECT, body: TEST_BODY }, session);
   }
@@ -58,19 +59,22 @@ export class GmailSending {
   private async dispatch(input: {
     id: string; outreachId?: number; kind: EmailDelivery["kind"];
     fromEmail: string; toEmail: string; subject: string; body: string;
-  }, session: { accessToken: string }): Promise<EmailDelivery> {
+  }, session: EmailTransportSession): Promise<EmailDelivery> {
     const raw = composeMessage(input);
-    const delivery = this.store.beginEmailDelivery(input);
+    const delivery = this.store.beginEmailDelivery({ ...input, provider: this.transport.id });
     this.store.markDeliverySending(delivery.id);
     try {
-      const result = await this.gmail.send(session, raw);
+      const result = await this.transport.send(session, { ...input, raw });
       return this.store.completeEmailDelivery(delivery.id, result);
     } catch (error) {
-      const uncertain = !(error instanceof GmailSendError) || error.uncertain;
-      const message = error instanceof GmailSendError ? error.message
-        : "Delivery could not be recorded reliably. Check Gmail Sent; retry is blocked.";
+      const uncertain = !(error instanceof EmailTransportError) || error.uncertain;
+      const message = error instanceof EmailTransportError ? error.message
+        : "Delivery could not be recorded reliably. Check the sender's Sent folder; retry is blocked.";
       this.store.failEmailDelivery(delivery.id, uncertain ? "UNCERTAIN" : "FAILED", message);
       throw new Error(message);
     }
   }
 }
+
+// Compatibility export for existing callers while the provider-neutral name rolls out.
+export { EmailSending as GmailSending };

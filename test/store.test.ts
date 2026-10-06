@@ -123,7 +123,7 @@ describe("OutboundStore", () => {
     diskDb.close();
     const reopenedDb = openDatabase(filename);
     assert.equal(new OutboundStore(reopenedDb).getCampaign(campaign.id)?.name, "Disk campaign");
-    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 8);
+    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 11);
     reopenedDb.close();
     rmSync(directory, { recursive: true });
   });
@@ -209,6 +209,67 @@ describe("OutboundStore", () => {
     }).emailStatus, "EMAIL_NOT_FOUND");
   });
 
+  it("keeps guessed recipients separate while allowing explicitly approved outreach", () => {
+    const { company } = campaignAndCompany();
+    store.reviewCompany(company.id, "APPROVED");
+    const contact = store.createContact({ companyId: company.id, name: "Pat Lee" });
+    store.reviewContact(contact.id, "APPROVED");
+
+    assert.throws(() => store.recordEmailGuess({ contactId: contact.id,
+      guessedEmail: "pat@example.com", pattern: "firstname", confidence: "COMMON_PATTERN",
+      basis: "Common first-name pattern" }), /EMAIL_NOT_FOUND/);
+
+    store.recordEmailDiscovery({ contactId: contact.id, emailStatus: "EMAIL_NOT_FOUND" });
+    const guessed = store.recordEmailGuess({ contactId: contact.id,
+      guessedEmail: "pat@example.com", pattern: "firstname", confidence: "COMMON_PATTERN",
+      basis: "Verified name maps cleanly to a common first-name pattern" });
+    assert.equal(guessed.email, null);
+    assert.equal(guessed.emailStatus, "EMAIL_NOT_FOUND");
+    assert.equal(guessed.guessedEmail, "pat@example.com");
+    assert.equal(guessed.guessedEmailPattern, "firstname");
+    assert.equal(guessed.guessedEmailConfidence, "COMMON_PATTERN");
+    assert.deepEqual(store.listEligibleProspects(company.campaignId).map(({ id }) => id), [contact.id]);
+    assert.deepEqual(store.listResearchEligibleProspects(company.campaignId).map(({ id }) => id), [contact.id]);
+
+    const guessedResearch = store.saveProspectResearch({ contactId: contact.id,
+      signals: [{ signal: "Launched a collaboration workflow", sourceUrl: "https://example.com/launch" }],
+      strongestSignalIndex: 0,
+      painHypothesis: "The workflow may eventually need embedded messaging.",
+      relevance: "ConvoKit could provide the messaging infrastructure." });
+    assert.equal(guessedResearch.status, "READY");
+    const draft = store.createOutreach({ contactId: contact.id, subject: "Collaboration",
+      body: "A researched draft", researchId: guessedResearch.strongestResearchId! });
+    assert.equal(draft.status, "DRAFT");
+
+    assert.throws(() => store.recordEmailGuess({ contactId: contact.id,
+      guessedEmail: "pat@other.test", pattern: "firstname", confidence: "COMMON_PATTERN",
+      basis: "Wrong domain" }), /company domain/);
+    assert.throws(() => store.recordEmailGuess({ contactId: contact.id,
+      guessedEmail: "pat@example.com", pattern: "firstname", confidence: "PATTERN_SUPPORTED",
+      basis: "Claims support without evidence" }), /source URL/);
+    assert.throws(() => store.recordEmailGuess({ contactId: contact.id,
+      guessedEmail: "pat@example.com", pattern: "firstname", confidence: "COMMON_PATTERN",
+      basis: "Unexpected source", sourceUrl: "https://example.com/team" }), /only valid/);
+
+    const supported = store.recordEmailGuess({ contactId: contact.id,
+      guessedEmail: "pat@example.com", pattern: "firstname", confidence: "PATTERN_SUPPORTED",
+      basis: "A public same-domain employee address demonstrates this pattern",
+      sourceUrl: "https://example.com/team" });
+    assert.equal(supported.guessedEmailSourceUrl, "https://example.com/team");
+    const approved = store.approveOutreachForSending(draft.id);
+    assert.equal(approved.status, "READY_TO_SEND");
+    assert.equal(approved.approvedRecipient, "pat@example.com");
+    assert.equal(store.getContactRecipient(contact.id)?.guessed, true);
+    assert.doesNotThrow(() => store.assertReadyToSend(draft.id));
+
+    const found = store.recordEmailDiscovery({ contactId: contact.id,
+      emailStatus: "PUBLICLY_LISTED", email: "pat.lee@example.com",
+      sourceUrl: "https://example.com/pat" });
+    assert.equal(found.guessedEmail, null);
+    assert.equal(found.guessedEmailConfidence, null);
+    assert.throws(() => store.assertReadyToSend(draft.id), /saved approval/);
+  });
+
   it("enforces the outreach approval state machine", () => {
     const { company } = campaignAndCompany();
     store.reviewCompany(company.id, "APPROVED");
@@ -269,7 +330,7 @@ describe("OutboundStore", () => {
     store.reviewCompany(company.id, "APPROVED");
     const contact = store.createContact({ companyId: company.id, name: "Pat" });
     store.reviewContact(contact.id, "APPROVED");
-    assert.throws(() => store.saveProspectResearch({ contactId: contact.id, signals: [] }), /sourced business email/);
+    assert.throws(() => store.saveProspectResearch({ contactId: contact.id, signals: [] }), /sourced or explicitly guessed/);
     store.recordEmailDiscovery({ contactId: contact.id, emailStatus: "PUBLICLY_LISTED",
       email: "pat@example.com", sourceUrl: "https://example.com/team" });
     const signal = { signal: "Launched workspace", sourceUrl: "https://example.com/launch" };
@@ -295,12 +356,18 @@ describe("OutboundStore", () => {
     assert.throws(() => store.createOutreach({ contactId: contact.id, subject: "Hi", body: "Hello", researchId: role.id }), /research signal/);
     const draft = store.createOutreach({ contactId: contact.id, subject: "Hi", body: "Hello", researchId });
     assert.throws(() => store.createOutreach({ contactId: contact.id, subject: "Duplicate", body: "Hello", researchId }), /already exists/);
+    const edited = store.editOutreach(draft.id, { subject: "  Manual subject  ", body: "  Manual body  " });
+    assert.equal(edited.subject, "Manual subject");
+    assert.equal(edited.body, "Manual body");
+    assert.equal(edited.researchId, researchId);
+    assert.throws(() => store.editOutreach(draft.id, { subject: "", body: "Body" }), /subject/);
     store.rewriteOutreach(draft.id, { subject: "Shorter", body: "New draft", researchId });
     assert.equal(store.getOutreach(draft.id)?.status, "DRAFT");
     assert.equal(store.getOutreach(draft.id)?.reviewedAt, null);
     assert.equal(store.approveOutreachForSending(draft.id).status, "READY_TO_SEND");
     assert.ok(store.getOutreach(draft.id)?.reviewedAt);
     assert.equal(store.getOutreach(draft.id)?.sentAt, null);
+    assert.throws(() => store.editOutreach(draft.id, { subject: "Again", body: "Changed" }), /Only DRAFT/);
     assert.throws(() => store.rewriteOutreach(draft.id, { subject: "Again", body: "Changed", researchId }), /Only DRAFT/);
   });
 

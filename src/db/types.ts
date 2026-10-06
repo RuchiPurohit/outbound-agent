@@ -11,6 +11,9 @@ export interface CompanyScoreBreakdown {
   liveProduct: number;
 }
 export type EmailStatus = "UNKNOWN" | "PUBLICLY_LISTED" | "VERIFIED" | "EMAIL_NOT_FOUND";
+export type EmailGuessConfidence = "PATTERN_SUPPORTED" | "COMMON_PATTERN" | "AMBIGUOUS";
+export type EmailGuessPattern = "firstname" | "firstname.lastname" | "firstnamelastname"
+  | "firstinitiallastname" | "firstname_lastname";
 export type OutreachStatus = "DRAFT" | "APPROVED" | "READY_TO_SEND" | "SENT" | "REPLIED" | "REJECTED";
 export type WorkflowRunKind = "COMPANY_DISCOVERY" | "CONTACT_DISCOVERY" | "EMAIL_DISCOVERY"
   | "PROSPECT_RESEARCH" | "EMAIL_GENERATION" | "DRAFT_REWRITE";
@@ -59,6 +62,11 @@ export interface Contact {
   linkedinUrl: string | null;
   email: string | null;
   emailStatus: EmailStatus;
+  guessedEmail: string | null;
+  guessedEmailPattern: EmailGuessPattern | null;
+  guessedEmailConfidence: EmailGuessConfidence | null;
+  guessedEmailBasis: string | null;
+  guessedEmailSourceUrl: string | null;
   status: ReviewStatus;
 }
 
@@ -90,6 +98,7 @@ export type DeliveryStatus = "PREPARING" | "SENDING" | "SENT" | "FAILED" | "UNCE
 
 export interface EmailDelivery {
   id: string;
+  provider: string;
   outreachId: number | null;
   kind: "OUTREACH" | "TEST";
   fromEmail: string;
@@ -97,6 +106,7 @@ export interface EmailDelivery {
   subject: string;
   body: string;
   status: DeliveryStatus;
+  providerReceipt: string | null;
   gmailMessageId: string | null;
   gmailThreadId: string | null;
   error: string | null;

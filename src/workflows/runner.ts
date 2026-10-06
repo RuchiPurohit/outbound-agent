@@ -18,8 +18,8 @@ export function buildPrompt(request: WorkflowRequest): string {
   return [instructions,
     `Use SQLite file ${process.env.OUTBOUND_DB_PATH ?? "data/outbound.sqlite"}; this overrides runbook database paths.`,
     "Use existing store operations. Do not change source code, schemas, runbooks, or approval states.",
-    "Never send messages or create Gmail drafts. Human review happens in the dashboard.",
-    "Never read .env files, Gmail OAuth credential files, or tokens. Never call Gmail send operations.",
+    "Never send messages or create email-provider drafts. Human review happens in the dashboard.",
+    "Never read .env files, email OAuth credential files, or tokens. Never call email send operations.",
   ].join(" ");
 }
 
@@ -50,16 +50,18 @@ function workflowPrompt(request: WorkflowRequest): string {
       return [
         "Read AGENTS.md, docs/ICP.md, and prompts/email-discovery.md.",
         `Run email discovery for campaign ${request.campaignId}.`,
-        "Process only APPROVED contacts whose email status is UNKNOWN.",
-        "Persist every result through recordEmailDiscovery and update the readable email report.",
-        "Never infer an address, draft outreach, create Gmail drafts, or send messages.",
+        "Process APPROVED contacts whose email status is UNKNOWN, plus EMAIL_NOT_FOUND contacts without a stored guess for guess-only completion.",
+        "Persist every sourced result through recordEmailDiscovery and update the readable email report.",
+        "After EMAIL_NOT_FOUND, optionally store one clearly labeled, non-sendable company-domain guess through recordEmailGuess, following the runbook's pattern order and evidence rules.",
+        "Never store a guess in contacts.email or treat it as public or verified. Do not draft outreach, create Gmail drafts, or send messages.",
         "Complete the workflow; do not merely explain how to do it.",
       ].join(" ");
     case "PROSPECT_RESEARCH":
       return [
         "Read AGENTS.md, docs/ICP.md, and prompts/prospect-research.md.",
         `Run prospect research for campaign ${request.campaignId}.`,
-        "Process only approved contacts at approved companies with sourced business emails and no existing prospect research.",
+        "Process only approved contacts at approved companies with either a sourced business email or a separately stored guessed-email hint, and no existing prospect research.",
+        "Never treat a guessed email as discovered, public, verified, or deliverable; downstream review must keep it clearly labelled.",
         "Use saveProspectResearch to persist at most three useful sourced signals, the strongest signal, a plausible pain hypothesis, and ConvoKit relevance.",
         "If no credible angle exists, save NO_SIGNAL using an empty signals array; never manufacture an angle.",
         "Do not generate emails. Stop for the user to select researched contacts in the dashboard checklist.",
@@ -70,7 +72,8 @@ function workflowPrompt(request: WorkflowRequest): string {
         `Generate first-touch drafts for campaign ${request.campaignId}.`,
         `Generate ONLY for these checked contact IDs: ${JSON.stringify(request.contactIds)}.`,
         "Do not draft for any other contact, even if they are eligible. Do not expand the selection.",
-        "Only approved prospects with sourced emails, READY prospect research, and no existing outreach are eligible.",
+        "Only approved prospects with sourced or separately guessed emails, READY prospect research, and no existing outreach are eligible.",
+        "A guessed recipient remains unverified and must stay clearly labelled; generation must never promote it to PUBLICLY_LISTED or VERIFIED.",
         "Every draft must reference one sourced prospect signal in its body and link its ID through createOutreach({contactId,subject,body,researchId}).",
         "Apply the Type A, Type B, automatic-qualifier, and LOW_FIT rules. Verify product workflows with first-party sources and ConvoKit capabilities against docs/PRODUCT.md or its current official website/docs.",
         "Comments, forums, support discussions, and collaboration signals, plus sourced product-specific chat engagement hypotheses, are at least MEDIUM fit and must receive a conditional Type B draft rather than being discarded for lacking existing embedded chat or public internal demand.",
@@ -100,15 +103,17 @@ export function validateRequest(store: OutboundStore, request: WorkflowRequest):
   if (request.kind === "EMAIL_DISCOVERY") {
     const hasTarget = companies
       .flatMap(({ id }) => store.listContacts(id))
-      .some(({ status, emailStatus }) => status === "APPROVED" && emailStatus === "UNKNOWN");
+      .some(({ status, emailStatus, guessedEmail }) => status === "APPROVED"
+        && (emailStatus === "UNKNOWN" || (emailStatus === "EMAIL_NOT_FOUND" && !guessedEmail)));
     if (!hasTarget) {
-      throw new WorkflowError("Approve at least one contact awaiting email discovery first");
+      throw new WorkflowError("Approve at least one contact awaiting email discovery or a guess first");
     }
   }
   const eligible = store.listEligibleProspects(request.campaignId);
+  const researchEligible = store.listResearchEligibleProspects(request.campaignId);
   if (request.kind === "PROSPECT_RESEARCH"
-    && !eligible.some(({ id }) => !store.getProspectResearch(id))) {
-    throw new WorkflowError("No approved prospects with sourced emails are awaiting research");
+    && !researchEligible.some(({ id }) => !store.getProspectResearch(id))) {
+    throw new WorkflowError("No approved prospects with sourced or guessed emails are awaiting research");
   }
   if (request.kind === "EMAIL_GENERATION") {
     if (!request.contactIds?.length) throw new WorkflowError("Select at least one researched prospect to generate drafts");
@@ -131,7 +136,7 @@ export function validateRequest(store: OutboundStore, request: WorkflowRequest):
 }
 
 export function nextWorkflowRequest(store: OutboundStore, finished: WorkflowRequest): WorkflowRequest | undefined {
-  const eligible = store.listEligibleProspects(finished.campaignId);
+  const eligible = store.listResearchEligibleProspects(finished.campaignId);
   if (finished.kind === "EMAIL_DISCOVERY"
     && eligible.some(({ id }) => !store.getProspectResearch(id))) {
     return { campaignId: finished.campaignId, kind: "PROSPECT_RESEARCH" };
@@ -165,7 +170,8 @@ export function launchWorkflow(
       "--search", "-C", process.cwd(), "--sandbox", "workspace-write",
       "--ask-for-approval", "never", "exec", buildPrompt(request),
     ], { stdio: ["ignore", "pipe", "pipe"], env: Object.fromEntries(Object.entries(process.env)
-      .filter(([key]) => !key.startsWith("GOOGLE_") && !key.startsWith("GMAIL_"))) });
+      .filter(([key]) => !key.startsWith("GOOGLE_") && !key.startsWith("GMAIL_")
+        && !key.startsWith("MCP_EMAIL_"))) });
   } catch (error) {
     store.failWorkflowRun(run.id, `Unable to start Codex: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
