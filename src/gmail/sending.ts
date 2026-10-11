@@ -13,9 +13,14 @@ export function validateEmail(value: string): string {
   return value;
 }
 
-export function composeMessage(input: { id: string; fromEmail: string; toEmail: string; subject: string; body: string }): string {
+const messageIdFor = (id: string): string => `<${id}@outbound-agent.local>`;
+
+export function composeMessage(input: {
+  id: string; fromEmail: string; toEmail: string; subject: string; body: string; inReplyTo?: string;
+}): string {
   validateEmail(input.fromEmail); validateEmail(input.toEmail);
   if (!/^[a-f0-9-]{36}$/i.test(input.id)) throw new Error("Invalid message ID");
+  if (input.inReplyTo !== undefined && !/^[a-f0-9-]{36}$/i.test(input.inReplyTo)) throw new Error("Invalid reply message ID");
   if (!input.subject.trim() || input.subject.length > 250 || /[\r\n\x00]/.test(input.subject)) {
     throw new Error("Email subject must be nonempty, under 250 characters, and contain no newlines.");
   }
@@ -31,7 +36,9 @@ export function composeMessage(input: { id: string; fromEmail: string; toEmail: 
   const body = Buffer.from(input.body, "utf8").toString("base64").match(/.{1,76}/g)!.join("\r\n");
   return Buffer.from([
     `From: ${input.fromEmail}`, `To: ${input.toEmail}`, `Subject: ${subject}`,
-    `Message-ID: <${input.id}@outbound-agent.local>`, `Date: ${new Date().toUTCString()}`,
+    `Message-ID: ${messageIdFor(input.id)}`,
+    ...(input.inReplyTo ? [`In-Reply-To: ${messageIdFor(input.inReplyTo)}`, `References: ${messageIdFor(input.inReplyTo)}`] : []),
+    `Date: ${new Date().toUTCString()}`,
     "MIME-Version: 1.0", 'Content-Type: text/plain; charset="UTF-8"',
     "Content-Transfer-Encoding: base64", "", body, "",
   ].join("\r\n"), "utf8").toString("base64url");
@@ -43,10 +50,20 @@ export class EmailSending {
   async sendApproved(outreachId: number, expected: {
     fromEmail: string; toEmail: string; subject: string; body: string;
   }): Promise<EmailDelivery> {
-    this.store.assertReadyToSend(outreachId);
+    const outreach = this.store.assertReadyToSend(outreachId);
+    const thread = outreach.followUpOf === null ? {} : this.replyThread(outreach.followUpOf);
     const session = await this.transport.authorizedSession();
     if (session.email !== expected.fromEmail) throw new Error("Connected email account changed. Review the send confirmation again.");
-    return this.dispatch({ ...expected, outreachId, kind: "OUTREACH", id: randomUUID() }, session);
+    return this.dispatch({ ...expected, ...thread, outreachId, kind: "OUTREACH", id: randomUUID() }, session);
+  }
+
+  // A follow-up replies to the delivered first touch so it lands in the same thread.
+  private replyThread(parentId: number): { inReplyTo: string; threadId?: string } {
+    const delivery = this.store.listEmailDeliveries()
+      .find((item) => item.outreachId === parentId && item.status === "SENT");
+    if (!delivery) throw new Error("The first-touch delivery record was not found; the follow-up cannot be threaded.");
+    const threadId = this.store.getOutreach(parentId)?.gmailThreadId ?? delivery.gmailThreadId ?? undefined;
+    return { inReplyTo: delivery.id, threadId };
   }
 
   async sendTest(toEmail: string, requestId: string, expectedSender: string): Promise<EmailDelivery> {
@@ -58,7 +75,7 @@ export class EmailSending {
 
   private async dispatch(input: {
     id: string; outreachId?: number; kind: EmailDelivery["kind"];
-    fromEmail: string; toEmail: string; subject: string; body: string;
+    fromEmail: string; toEmail: string; subject: string; body: string; inReplyTo?: string; threadId?: string;
   }, session: EmailTransportSession): Promise<EmailDelivery> {
     const raw = composeMessage(input);
     const delivery = this.store.beginEmailDelivery({ ...input, provider: this.transport.id });

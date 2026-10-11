@@ -8,6 +8,7 @@ import type { Campaign, ResearchRecord, WorkflowRun } from "../db/types.js";
 import { launchWorkflow } from "../workflows/runner.js";
 import { renderEmailResults } from "./emailResults.js";
 import { renderProspectStages } from "./prospectStages.js";
+import { countDueFollowUps, renderFollowUps } from "./followUps.js";
 import { FileTokenStore, GmailClient } from "../gmail/client.js";
 import { EmailSending } from "../gmail/sending.js";
 import { renderGmailSettings } from "./gmailSettings.js";
@@ -69,8 +70,8 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
   body = body.replace(">Find public emails</button>", ">Find emails / guesses</button>");
   body = body.replace("approved contact(s) awaiting discovery", "approved contact(s) awaiting email check or guess");
   body = body.replace(
-    '<section class="card span8"><div class="cardhead"><div><span class="eyebrow">Stage 3</span>',
-    '<section class="card span12"><div class="cardhead"><div><span class="eyebrow">Stage 3</span>',
+    '<section class="card span8" id="email-discovery"><div class="cardhead"><div><span class="eyebrow">Stage 3</span>',
+    '<section class="card span12" id="email-discovery"><div class="cardhead"><div><span class="eyebrow">Stage 3</span>',
   );
   body = body.replace(
     '<aside class="card span4"><span class="eyebrow">Safety gates</span>',
@@ -86,14 +87,38 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
 @media(max-width:800px){.company-results th:nth-child(5),.company-results td:nth-child(5){display:table-cell}}
 .email-preview{background:white;color:var(--ink);border:1px solid var(--line);font-family:inherit;font-size:15px;line-height:1.6;max-height:none}
 .badge.READY_TO_SEND{background:var(--green2);color:var(--green)}
-.badge.SENT{background:var(--green2);color:var(--green)}.badge.UNCERTAIN,.badge.SENDING,.badge.PREPARING{background:#f2e5c9;color:var(--amber)}
+.badge.SENT{background:var(--green2);color:var(--green)}
+.tabs{display:flex;gap:4px;margin:22px 0 0;border-bottom:1px solid var(--line)}.tabs a{padding:10px 14px;color:var(--muted);font-weight:650;border-bottom:2px solid transparent;margin-bottom:-1px}.tabs a:hover{text-decoration:none;color:var(--ink)}.tabs a.active{color:var(--ink);border-bottom-color:var(--green)}
+.toasts{position:fixed;top:16px;right:16px;left:16px;margin-left:auto;max-width:420px;z-index:10}.toasts .notice{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;margin:0 0 8px;box-shadow:var(--shadow)}.toasts .dismiss{background:none;color:inherit;padding:0 2px;font-size:16px;line-height:1}.badge.UNCERTAIN,.badge.SENDING,.badge.PREPARING{background:#f2e5c9;color:var(--amber)}
 </style></head><body><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/gmail">Email connections</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
-<script>document.querySelectorAll('[data-select]').forEach(function(b){b.addEventListener('click',function(){b.closest('form').querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function(c){c.checked=true})})})</script></body></html>`;
+<script>document.querySelectorAll('.toasts .dismiss').forEach(function(b){b.addEventListener('click',function(){b.parentElement.remove()})});document.querySelectorAll('[data-select]').forEach(function(b){b.addEventListener('click',function(){b.closest('form').querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function(c){c.checked=true})})})</script></body></html>`;
 }
 
-function redirect(response: ServerResponse, path: string, message?: { error?: string; notice?: string }): void {
-  const query = message ? new URLSearchParams(message as Record<string, string>).toString() : "";
-  response.writeHead(303, { Location: `${path}${query ? `?${query}` : ""}` }).end();
+function redirect(
+  response: ServerResponse, path: string, message?: Record<string, string>, anchor?: string,
+): void {
+  const query = message ? new URLSearchParams(message).toString() : "";
+  response.writeHead(303, { Location: `${path}${query ? `?${query}` : ""}${anchor ? `#${anchor}` : ""}` }).end();
+}
+
+// Returns the redirect target that keeps the user at the section a campaign POST came from.
+function campaignReturn(campaignId: number, action: string): { path: string; params: Record<string, string>; anchor?: string } {
+  const path = `/campaigns/${campaignId}`;
+  const draftId = action.match(/^outreach\/(\d+)\//)?.[1];
+  const outreach = draftId ? store.getOutreach(Number(draftId)) : undefined;
+  if (outreach && (outreach.followUpOf !== null || outreach.status === "SENT" || outreach.status === "REPLIED")) {
+    const sentId = String(outreach.followUpOf ?? outreach.id);
+    return { path: `${path}/follow-ups`, params: { open: sentId }, anchor: `sent-${sentId}` };
+  }
+  if (draftId) return { path, params: { draftId }, anchor: `email-${draftId}` };
+  if (action === "workflows/follow-up-generation") return { path: `${path}/follow-ups`, params: {}, anchor: "generate-follow-ups" };
+  const anchors: Record<string, string> = {
+    "companies/review": "companies", "workflows/company-discovery": "companies",
+    "contacts/review": "contacts", "workflows/contact-discovery": "contacts",
+    "workflows/email-discovery": "email-discovery",
+    "workflows/prospect-research": "prospect-research", "workflows/email-generation": "draft-review",
+  };
+  return { path, params: {}, anchor: anchors[action] };
 }
 
 function send(response: ServerResponse, status: number, html: string): void {
@@ -121,7 +146,8 @@ function requirePositiveId(value: string | null, label: string): number {
 function notices(url: URL): string {
   const error = url.searchParams.get("error");
   const notice = url.searchParams.get("notice");
-  return `${error ? `<div class="notice error">${escapeHtml(error)}</div>` : ""}${notice ? `<div class="notice">${escapeHtml(notice)}</div>` : ""}`;
+  if (!error && !notice) return "";
+  return `<div class="toasts">${error ? `<div class="notice error">${escapeHtml(error)}<button type="button" class="dismiss" aria-label="Dismiss">×</button></div>` : ""}${notice ? `<div class="notice">${escapeHtml(notice)}<button type="button" class="dismiss" aria-label="Dismiss">×</button></div>` : ""}</div>`;
 }
 
 function dashboardPage(url: URL): string {
@@ -143,6 +169,17 @@ function sourceFor(research: ResearchRecord[], companyId: number, contactId?: nu
 function runLabel(run: WorkflowRun): string {
   const time = new Date(run.requestedAt).toLocaleString();
   return `${humanize(run.kind)} · ${time}`;
+}
+
+function campaignHeader(campaign: Campaign, url: URL, tab: "pipeline" | "follow-ups"): string {
+  const due = countDueFollowUps(store, campaign.id);
+  return `<a href="/">← All campaigns</a><section style="margin-top:18px"><span class="eyebrow">Campaign ${campaign.id}</span><h1>${escapeHtml(campaign.name)}</h1><p class="lede">${escapeHtml(campaign.segment)}</p></section>${notices(url)}<nav class="tabs"><a href="/campaigns/${campaign.id}"${tab === "pipeline" ? ' class="active"' : ""}>Pipeline</a><a href="/campaigns/${campaign.id}/follow-ups"${tab === "follow-ups" ? ' class="active"' : ""}>Sent &amp; follow-ups${due ? ` <span class="badge PENDING">${due} due</span>` : ""}</a></nav>`;
+}
+
+function followUpsPage(campaign: Campaign, url: URL): string {
+  const isRunning = store.listWorkflowRuns(campaign.id).some(({ status }) => status === "PENDING" || status === "RUNNING");
+  const running = isRunning ? `<div class="notice">A workflow is running. This page refreshes every 3s; output is under Workflow runs on the <a href="/campaigns/${campaign.id}#runs">Pipeline</a> tab.</div>` : "";
+  return layout(`${campaign.name} · Follow-ups`, `${campaignHeader(campaign, url, "follow-ups")}${running}<div class="grid">${renderFollowUps(store, campaign.id, Number(url.searchParams.get("open")) || undefined)}</div>`, { refreshing: isRunning });
 }
 
 function campaignPage(campaign: Campaign, url: URL): string {
@@ -183,7 +220,7 @@ function campaignPage(campaign: Campaign, url: URL): string {
 
   const runRows = runs.map((run) => `<details${run.status === "RUNNING" ? " open" : ""}><summary>${escapeHtml(runLabel(run))} <span class="badge ${run.status}">${humanize(run.status)}</span></summary>${run.error ? `<div class="notice error">${escapeHtml(run.error)}</div>` : ""}<pre>${escapeHtml(run.output || (run.status === "RUNNING" ? "Starting Codex…" : "No output captured."))}</pre></details>`).join("");
 
-  return layout(campaign.name, `<a href="/">← All campaigns</a><section style="margin-top:18px"><span class="eyebrow">Campaign ${campaign.id}</span><h1>${escapeHtml(campaign.name)}</h1><p class="lede">${escapeHtml(campaign.segment)}</p></section>${notices(url)}<div class="steps"><div class="step"><strong>${companies.length} companies</strong>${approvedCompanies} approved</div><div class="step"><strong>${contacts.length} contacts</strong>${approvedContacts} approved</div><div class="step"><strong>${emailComplete} email checks</strong>${contactsAwaitingEmail} approved contact(s) awaiting discovery</div></div><div class="grid"><section class="card span12"><div class="cardhead"><div><span class="eyebrow">Stage 1</span><h2>Company discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/company-discovery" class="inline"><input name="targetCount" type="number" min="1" max="25" value="5" style="width:70px" aria-label="Target count"><button ${isRunning ? "disabled" : ""}>${companies.length ? "Find more" : "Run discovery"}</button></form></div>${companies.length ? `<form method="post" action="/campaigns/${campaign.id}/companies/review"><div class="actions"><button type="button" class="secondary" data-select>Select all</button><button name="decision" value="APPROVED">Approve selected</button><button class="danger" name="decision" value="REJECTED">Reject selected</button></div><div class="tablewrap"><table><thead><tr><th></th><th>Company</th><th>Fit</th><th>Score</th><th>Why ConvoKit</th><th>Signal</th><th>Status</th></tr></thead><tbody>${companyRows}</tbody></table></div></form>` : '<div class="empty">No companies stored yet. Run discovery to populate this stage.</div>'}</section><section class="card span12"><div class="cardhead"><div><span class="eyebrow">Stage 2</span><h2>Contact discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/contact-discovery"><button ${isRunning || approvedCompanies === 0 ? "disabled" : ""}>Run contact discovery</button></form></div>${contacts.length ? `<form method="post" action="/campaigns/${campaign.id}/contacts/review"><div class="actions"><button type="button" class="secondary" data-select>Select all</button><button name="decision" value="APPROVED">Approve selected</button><button class="danger" name="decision" value="REJECTED">Reject selected</button></div><div class="tablewrap"><table><thead><tr><th></th><th>Contact</th><th>Company</th><th>Role / score</th><th>Evidence</th><th>Email</th><th>Status</th></tr></thead><tbody>${contactRows}</tbody></table></div></form>` : `<div class="empty">${approvedCompanies ? "Approved companies are ready for contact discovery." : "Approve companies to unlock contact discovery."}</div>`}</section><section class="card span8"><div class="cardhead"><div><span class="eyebrow">Stage 3</span><h2>Email discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/email-discovery"><button ${isRunning || contactsAwaitingEmail === 0 ? "disabled" : ""}>Find public emails</button></form></div><p class="muted">Only approved contacts with an unknown email status are checked. Inferred addresses are never stored as verified.</p>${renderEmailResults(companies, contacts, research)}</section><aside class="card span4"><span class="eyebrow">Safety gates</span><h2 style="margin-top:5px">Human approval stays required</h2><p class="muted">Research may run automatically. Company, contact, and future email-draft approvals remain manual.</p></aside>${renderProspectStages(store, campaign.id, Number(url.searchParams.get("draftId")) || undefined)}<section class="card span12"><div class="cardhead"><div><span class="eyebrow">Activity</span><h2>Workflow runs</h2></div>${isRunning ? '<span class="badge RUNNING">Refreshing every 3s</span>' : ""}</div>${runRows || '<div class="empty">No research runs yet.</div>'}</section></div>`, { refreshing: isRunning });
+  return layout(campaign.name, `${campaignHeader(campaign, url, "pipeline")}<div class="steps"><div class="step"><strong>${companies.length} companies</strong>${approvedCompanies} approved</div><div class="step"><strong>${contacts.length} contacts</strong>${approvedContacts} approved</div><div class="step"><strong>${emailComplete} email checks</strong>${contactsAwaitingEmail} approved contact(s) awaiting discovery</div></div><div class="grid"><section class="card span12" id="companies"><div class="cardhead"><div><span class="eyebrow">Stage 1</span><h2>Company discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/company-discovery" class="inline"><input name="targetCount" type="number" min="1" max="25" value="5" style="width:70px" aria-label="Target count"><button ${isRunning ? "disabled" : ""}>${companies.length ? "Find more" : "Run discovery"}</button></form></div>${companies.length ? `<form method="post" action="/campaigns/${campaign.id}/companies/review"><div class="actions"><button type="button" class="secondary" data-select>Select all</button><button name="decision" value="APPROVED">Approve selected</button><button class="danger" name="decision" value="REJECTED">Reject selected</button></div><div class="tablewrap"><table><thead><tr><th></th><th>Company</th><th>Fit</th><th>Score</th><th>Why ConvoKit</th><th>Signal</th><th>Status</th></tr></thead><tbody>${companyRows}</tbody></table></div></form>` : '<div class="empty">No companies stored yet. Run discovery to populate this stage.</div>'}</section><section class="card span12" id="contacts"><div class="cardhead"><div><span class="eyebrow">Stage 2</span><h2>Contact discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/contact-discovery"><button ${isRunning || approvedCompanies === 0 ? "disabled" : ""}>Run contact discovery</button></form></div>${contacts.length ? `<form method="post" action="/campaigns/${campaign.id}/contacts/review"><div class="actions"><button type="button" class="secondary" data-select>Select all</button><button name="decision" value="APPROVED">Approve selected</button><button class="danger" name="decision" value="REJECTED">Reject selected</button></div><div class="tablewrap"><table><thead><tr><th></th><th>Contact</th><th>Company</th><th>Role / score</th><th>Evidence</th><th>Email</th><th>Status</th></tr></thead><tbody>${contactRows}</tbody></table></div></form>` : `<div class="empty">${approvedCompanies ? "Approved companies are ready for contact discovery." : "Approve companies to unlock contact discovery."}</div>`}</section><section class="card span8" id="email-discovery"><div class="cardhead"><div><span class="eyebrow">Stage 3</span><h2>Email discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/email-discovery"><button ${isRunning || contactsAwaitingEmail === 0 ? "disabled" : ""}>Find public emails</button></form></div><p class="muted">Only approved contacts with an unknown email status are checked. Inferred addresses are never stored as verified.</p>${renderEmailResults(companies, contacts, research)}</section><aside class="card span4"><span class="eyebrow">Safety gates</span><h2 style="margin-top:5px">Human approval stays required</h2><p class="muted">Research may run automatically. Company, contact, and future email-draft approvals remain manual.</p></aside>${renderProspectStages(store, campaign.id, Number(url.searchParams.get("draftId")) || undefined)}<section class="card span12" id="runs"><div class="cardhead"><div><span class="eyebrow">Activity</span><h2>Workflow runs</h2></div>${isRunning ? '<span class="badge RUNNING">Refreshing every 3s</span>' : ""}</div>${runRows || '<div class="empty">No research runs yet.</div>'}</section></div>`, { refreshing: isRunning });
 }
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -283,17 +320,22 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const recipientWarning = recipient.guessed
       ? `<div class="notice error"><strong>Warning:</strong> ${escapeHtml(recipient.address)} is a guessed, unverified address. It may bounce or belong to someone else.</div>`
       : "";
-    send(response, 200, layout("Confirm send", `<a href="/campaigns/${campaignId}#draft-review">← Emails</a><section class="card" style="margin-top:18px"><h1>Confirm sending</h1><p><strong>From:</strong> ${escapeHtml(sender)}<br><strong>To:</strong> ${escapeHtml(recipient.address)}${recipient.guessed ? ' <span class="badge UNKNOWN">Guessed</span>' : ""}<br><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p>${recipientWarning}<pre class="email-preview">${escapeHtml(draft.body)}</pre><div class="notice">This sends a real email to this prospect. Sending cannot be undone by this dashboard.</div><form method="post" action="/campaigns/${campaignId}/outreach/${id}/send"><input type="hidden" name="sendSignature" value="${signature("outreach", id, expected)}"><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending this exact approved email to the recipient above${recipient.guessed ? ", knowing the address is guessed and unverified" : ""}.</label><button>Send email now</button></form></section>`)); return;
+    const back = draft.followUpOf === null
+      ? `<a href="/campaigns/${campaignId}?draftId=${id}#email-${id}">← Emails</a>`
+      : `<a href="/campaigns/${campaignId}/follow-ups?open=${draft.followUpOf}#sent-${draft.followUpOf}">← Sent &amp; follow-ups</a>`;
+    const threadNote = draft.followUpOf === null ? ""
+      : `<div class="notice">Follow-up: sent as a reply in the same thread as the first email${emailTransport.id === "gmail" ? "" : `. ${escapeHtml(emailTransport.label)} may not support threading, so it could arrive as a separate message with the same subject`}.</div>`;
+    send(response, 200, layout("Confirm send", `${back}<section class="card" style="margin-top:18px"><h1>Confirm sending</h1>${threadNote}<p><strong>From:</strong> ${escapeHtml(sender)}<br><strong>To:</strong> ${escapeHtml(recipient.address)}${recipient.guessed ? ' <span class="badge UNKNOWN">Guessed</span>' : ""}<br><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p>${recipientWarning}<pre class="email-preview">${escapeHtml(draft.body)}</pre><div class="notice">This sends a real email to this prospect. Sending cannot be undone by this dashboard.</div><form method="post" action="/campaigns/${campaignId}/outreach/${id}/send"><input type="hidden" name="sendSignature" value="${signature("outreach", id, expected)}"><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending this exact approved email to the recipient above${recipient.guessed ? ", knowing the address is guessed and unverified" : ""}.</label><button>Send email now</button></form></section>`)); return;
   }
   if (request.method === "GET" && url.pathname === "/") {
     send(response, 200, dashboardPage(url)); return;
   }
 
-  const campaignMatch = url.pathname.match(/^\/campaigns\/(\d+)$/);
+  const campaignMatch = url.pathname.match(/^\/campaigns\/(\d+)(\/follow-ups)?$/);
   if (request.method === "GET" && campaignMatch) {
     const campaign = store.getCampaign(Number(campaignMatch[1]));
     if (!campaign) throw new WorkflowError("Campaign not found");
-    send(response, 200, campaignPage(campaign, url)); return;
+    send(response, 200, campaignMatch[2] ? followUpsPage(campaign, url) : campaignPage(campaign, url)); return;
   }
 
   if (request.method === "POST" && url.pathname === "/campaigns") {
@@ -320,8 +362,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const action = actionMatch[2];
     if (!store.getCampaign(campaignId)) throw new WorkflowError("Campaign not found");
     const form = await formData(request);
+    const back = (message: Record<string, string>): void => {
+      const target = campaignReturn(campaignId, action);
+      redirect(response, target.path, { ...target.params, ...message }, target.anchor);
+    };
 
-    const draftAction = action.match(/^outreach\/(\d+)\/(edit|review|rewrite|restore|send)$/);
+    const draftAction = action.match(/^outreach\/(\d+)\/(edit|review|rewrite|restore|send|replied)$/);
     if (draftAction) {
       const outreachId = Number(draftAction[1]);
       const draft = store.getOutreach(outreachId);
@@ -343,27 +389,31 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           throw new WorkflowError("Send confirmation expired or recipient/content changed. Review the email and confirm sending again.");
         }
         const delivery = await emailSending.sendApproved(outreachId, expected);
-        redirect(response, `/campaigns/${campaignId}`, { notice: `Email sent to ${delivery.toEmail}. ${emailTransport.label} receipt ${delivery.providerReceipt}.` }); return;
+        back({ notice: `Email sent to ${delivery.toEmail}. ${emailTransport.label} receipt ${delivery.providerReceipt}.` }); return;
+      }
+      if (draftAction[2] === "replied") {
+        store.markOutreachReplied(outreachId);
+        back({ notice: "Marked as replied. No follow-up will be sent." }); return;
       }
       if (draftAction[2] === "edit") {
         store.editOutreach(outreachId, { subject: form.get("subject") ?? "", body: form.get("body") ?? "" });
-        redirect(response, `/campaigns/${campaignId}`, { notice: "Draft changes saved. Fresh approval is still required." }); return;
+        back({ notice: "Draft changes saved. Fresh approval is still required." }); return;
       }
       if (draftAction[2] === "restore") {
         store.withdrawOutreachApproval(outreachId);
-        redirect(response, `/campaigns/${campaignId}`, { notice: "Returned to DRAFT for a fresh human review. Nothing was sent." }); return;
+        back({ notice: "Returned to DRAFT for a fresh human review. Nothing was sent." }); return;
       }
       if (draftAction[2] === "rewrite") {
         const feedback = form.get("feedback")?.trim() ?? "";
         if (!feedback || feedback.length > 2000) throw new WorkflowError("Provide up to 2000 characters of rewrite feedback");
         launchWorkflow(db, { campaignId, kind: "DRAFT_REWRITE", outreachId, feedback });
-        redirect(response, `/campaigns/${campaignId}`, { notice: "Rewrite started; draft remains unapproved" }); return;
+        back({ notice: "Rewrite started; draft remains unapproved" }); return;
       }
       const decision = form.get("decision");
       if (decision === "APPROVED") store.approveOutreachForSending(outreachId);
       else if (decision === "REJECTED") store.rejectOutreach(outreachId);
       else throw new WorkflowError("Choose approve or reject");
-      redirect(response, `/campaigns/${campaignId}`, {
+      back({
         notice: decision === "APPROVED" ? "Draft approved and READY_TO_SEND. Nothing was sent." : "Draft rejected",
       }); return;
     }
@@ -375,6 +425,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         "workflows/email-discovery": "EMAIL_DISCOVERY",
         "workflows/prospect-research": "PROSPECT_RESEARCH",
         "workflows/email-generation": "EMAIL_GENERATION",
+        "workflows/follow-up-generation": "FOLLOW_UP_GENERATION",
       } as const;
       const kind = kinds[action as keyof typeof kinds];
       if (!kind) throw new WorkflowError("Unknown workflow");
@@ -385,8 +436,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }
       const contactIds = kind === "EMAIL_GENERATION"
         ? form.getAll("contactIds").map((value) => requirePositiveId(value, "selected contact ID")) : undefined;
-      const run = launchWorkflow(db, { campaignId, kind, targetCount, contactIds });
-      redirect(response, `/campaigns/${campaignId}`, { notice: `Started ${humanize(run.kind)}` }); return;
+      const outreachIds = kind === "FOLLOW_UP_GENERATION"
+        ? form.getAll("outreachIds").map((value) => requirePositiveId(value, "selected email ID")) : undefined;
+      const run = launchWorkflow(db, { campaignId, kind, targetCount, contactIds, outreachIds });
+      back({ notice: `Started ${humanize(run.kind)}` }); return;
     }
 
     if (action === "companies/review" || action === "contacts/review") {
@@ -408,7 +461,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         })) throw new WorkflowError("Contact does not belong to this campaign");
         store.reviewContacts(ids, decision);
       }
-      redirect(response, `/campaigns/${campaignId}`, { notice: `${ids.length} record(s) ${decision.toLowerCase()}` }); return;
+      back({ notice: `${ids.length} record(s) ${decision.toLowerCase()}` }); return;
     }
   }
 
@@ -419,9 +472,12 @@ const messageOf = (error: unknown): string => error instanceof Error ? error.mes
 
 const server = createServer((request, response) => {
   handle(request, response).catch((error) => {
-    const campaignId = request.url?.match(/^\/campaigns\/(\d+)/)?.[1];
-    if (request.method === "POST") {
-      redirect(response, campaignId ? `/campaigns/${campaignId}` : request.url?.startsWith("/gmail") ? "/gmail" : "/", { error: messageOf(error) });
+    const campaignAction = request.url?.match(/^\/campaigns\/(\d+)\/([^?#]+)/);
+    if (request.method === "POST" && campaignAction) {
+      const target = campaignReturn(Number(campaignAction[1]), campaignAction[2]);
+      redirect(response, target.path, { ...target.params, error: messageOf(error) }, target.anchor);
+    } else if (request.method === "POST") {
+      redirect(response, request.url?.startsWith("/gmail") ? "/gmail" : "/", { error: messageOf(error) });
     } else {
       send(response, error instanceof WorkflowError ? 400 : 500,
         layout("Error", `<div class="notice error">${escapeHtml(messageOf(error))}</div><a href="/">Return to campaigns</a>`));

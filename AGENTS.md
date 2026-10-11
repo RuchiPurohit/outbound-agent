@@ -200,6 +200,13 @@ Never invoke approval operations from a research or generation workflow.
 Research must stop for checklist selection. Generate first-touch drafts only
 for the contact IDs explicitly checked in the dashboard generation request.
 
+Follow-up generation is a separate dashboard workflow:
+`prompts/follow-up-generation.md`. Generate follow-up drafts only for the sent
+first-touch outreach IDs explicitly checked in the Sent & follow-ups tab.
+Follow-ups stay DRAFT until human review, keep the first touch's subject and
+cited signal, and may be sent only 7 days after the first touch, after explicit
+send confirmation, and only if the prospect has not been marked as replied.
+
 Gmail sending is a deterministic dashboard operation, never a research task.
 Only an explicit human send confirmation may dispatch READY_TO_SEND outreach.
 Never read .env, Gmail OAuth credentials, or tokens during research/generation.

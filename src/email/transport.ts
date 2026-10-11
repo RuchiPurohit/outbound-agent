@@ -11,6 +11,8 @@ export interface EmailMessage {
   subject: string;
   body: string;
   raw: string;
+  /** Provider thread to reply in, for follow-ups. */
+  threadId?: string;
 }
 
 export interface EmailTransportResult {

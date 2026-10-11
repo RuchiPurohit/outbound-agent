@@ -391,4 +391,31 @@ export const migrations: readonly string[] = [
     CREATE UNIQUE INDEX email_deliveries_outreach_guard_idx ON email_deliveries(outreach_id)
       WHERE outreach_id IS NOT NULL AND status IN ('PREPARING', 'SENDING', 'SENT', 'UNCERTAIN');
   `,
+  `
+    ALTER TABLE outreach ADD COLUMN follow_up_of INTEGER REFERENCES outreach(id);
+    CREATE INDEX outreach_follow_up_idx ON outreach(follow_up_of);
+
+    ALTER TABLE workflow_runs RENAME TO workflow_runs_v12;
+    CREATE TABLE workflow_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('COMPANY_DISCOVERY', 'CONTACT_DISCOVERY',
+        'EMAIL_DISCOVERY', 'PROSPECT_RESEARCH', 'EMAIL_GENERATION', 'DRAFT_REWRITE',
+        'FOLLOW_UP_GENERATION')),
+      status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED')),
+      details TEXT,
+      output TEXT NOT NULL DEFAULT '',
+      error TEXT,
+      requested_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      CHECK (status != 'RUNNING' OR started_at IS NOT NULL),
+      CHECK (status NOT IN ('COMPLETED', 'FAILED') OR finished_at IS NOT NULL)
+    ) STRICT;
+    INSERT INTO workflow_runs SELECT * FROM workflow_runs_v12;
+    DROP TABLE workflow_runs_v12;
+    CREATE INDEX workflow_runs_campaign_requested_idx ON workflow_runs(campaign_id, requested_at DESC);
+    CREATE INDEX workflow_runs_status_idx ON workflow_runs(status);
+  `,
 ];
