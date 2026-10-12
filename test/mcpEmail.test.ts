@@ -18,8 +18,11 @@ class MemoryTokens implements McpTokenStore {
   clear() { this.value = undefined; }
 }
 
+interface StoredMessage { folder: string; uid: number; messageId: string; to: string[]; subject: string; date?: string }
+
 function mockServer(options: {
   profileEmail?: string; incompatibleSend?: boolean; omitSendIds?: boolean; sendRpcError?: boolean;
+  mailbox?: StoredMessage[]; omitFollowUpTool?: boolean;
 } = {}) {
   const calls: Array<{ url: string; payload?: Record<string, any> }> = [];
   const tools = [
@@ -29,7 +32,14 @@ function mockServer(options: {
       ? { recipient: {}, subject: {}, body: {} }
       : { accountId: {}, to: { type: "array", items: { type: "string" } },
         subject: {}, text: {}, idempotency_key: {} } } },
+    { name: "list_mail_folders", inputSchema: { properties: { accountId: {} } } },
+    { name: "search_mail", inputSchema: { properties: { accountIds: {}, folder: {}, to: {}, since: {}, before: {}, limit: {} } } },
+    { name: "get_message", inputSchema: { properties: { accountId: {}, folder: {}, uid: {} } } },
+    ...(options.omitFollowUpTool ? [] : [{ name: "send_follow_up",
+      inputSchema: { properties: { accountId: {}, sourceFolder: {}, sourceUid: {}, text: {}, replyAll: {} } } }]),
   ];
+  const mailbox = options.mailbox ?? [];
+  const rpc = (id: unknown, structuredContent: unknown) => Response.json({ jsonrpc: "2.0", id, result: { structuredContent } });
   const request: typeof fetch = async (input, init) => {
     const url = String(input);
     const payload = init?.body && String(init.body).startsWith("{")
@@ -45,7 +55,7 @@ function mockServer(options: {
     });
     if (url.endsWith("/register")) return Response.json({ client_id: "dynamic-client" });
     if (url.endsWith("/token")) return Response.json({ access_token: "access", refresh_token: "refresh",
-      expires_in: 3600, scope: "profile mail:read mail:send" });
+      expires_in: 3600, scope: "profile mail:read mail:send mail:write" });
     if (url.endsWith("/revoke")) return new Response(null, { status: 200 });
     assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer access");
     if (payload?.method === "notifications/initialized") return new Response(null, { status: 202 });
@@ -59,7 +69,22 @@ function mockServer(options: {
     if (payload?.params?.name === "send_email") return options.sendRpcError
       ? Response.json({ jsonrpc: "2.0", id: payload.id, error: { code: -32602, message: "Invalid arguments" } })
       : Response.json({ jsonrpc: "2.0", id: payload.id,
-        result: { structuredContent: options.omitSendIds ? {} : { messageId: "mcp-message", threadId: "mcp-thread" } } });
+        result: { structuredContent: options.omitSendIds ? {}
+          : { messageId: "mcp-message", threadId: "mcp-thread", sentCopy: { folder: "Sent Items", uid: 41 } } } });
+    const args = payload?.params?.arguments ?? {};
+    if (payload?.params?.name === "list_mail_folders") {
+      return rpc(payload.id, { folders: [{ path: "INBOX" }, { path: "Sent Items", specialUse: "\\Sent" }] });
+    }
+    if (payload?.params?.name === "search_mail") return rpc(payload.id, { results: mailbox
+      .filter((item) => item.folder === args.folder && item.to.includes(args.to))
+      .map(({ folder, uid, subject }) => ({ accountId: "account-1", folder, uid, subject })) });
+    if (payload?.params?.name === "get_message") {
+      const found = mailbox.find((item) => item.folder === args.folder && item.uid === args.uid);
+      return rpc(payload.id, found ? { message: { uid: found.uid, messageId: found.messageId, to: found.to.map((address) => ({ address })), subject: found.subject, date: found.date ?? new Date().toISOString() } } : {});
+    }
+    if (payload?.params?.name === "send_follow_up") {
+      return rpc(payload.id, { messageId: "<follow-up@mail.example>", sentCopy: { folder: "Sent Items", uid: 99 } });
+    }
     throw new Error(`Unexpected request ${url}`);
   };
   return { request, calls };
@@ -77,7 +102,7 @@ describe("MCP email OAuth transport", () => {
     assert.equal(url.searchParams.get("redirect_uri"), redirectUri);
     assert.equal(url.searchParams.get("resource"), endpoint);
     assert.equal(url.searchParams.get("code_challenge_method"), "S256");
-    assert.equal(url.searchParams.get("scope"), "profile mail:read mail:send");
+    assert.equal(url.searchParams.get("scope"), "profile mail:read mail:send mail:write");
     assert.ok(url.searchParams.get("code_challenge"));
     assert.equal(await transport.finishAuthorization("code", authorization.state, authorization.state), sender);
     assert.equal(transport.connectedEmail(), sender);
@@ -86,7 +111,8 @@ describe("MCP email OAuth transport", () => {
     const session = await transport.authorizedSession();
     const result = await transport.send(session, { id: "request-id", fromEmail: sender,
       toEmail: "prospect@example.com", subject: "Subject", body: "Body", raw: "unused" });
-    assert.deepEqual(result, { receiptId: "mcp-message", messageId: "mcp-message", threadId: "mcp-thread" });
+    assert.deepEqual(result, { receiptId: "mcp-message", messageId: "mcp-message", threadId: "mcp-thread",
+      sentCopy: { folder: "Sent Items", uid: 41 } });
     const send = mock.calls.find(({ payload }) => payload?.params?.name === "send_email");
     assert.deepEqual(send?.payload?.params.arguments, { accountId: "account-1", to: ["prospect@example.com"],
       subject: "Subject", text: "Body", idempotency_key: "request-id" });
@@ -103,7 +129,72 @@ describe("MCP email OAuth transport", () => {
     const session = await transport.authorizedSession();
     const result = await transport.send(session, { id: "request-id", fromEmail: sender,
       toEmail: "prospect@example.com", subject: "Subject", body: "Body", raw: "unused" });
-    assert.deepEqual(result, { receiptId: "mcp-ack:request-id", messageId: undefined, threadId: undefined });
+    assert.deepEqual(result, { receiptId: "mcp-ack:request-id", messageId: undefined, threadId: undefined, sentCopy: undefined });
+  });
+
+  const original = { folder: "Sent Items", uid: 41, messageId: "<first@mail.example>", to: ["prospect@example.com"], subject: "Subject" };
+  const replyTo = { deliveryId: "11111111-1111-4111-8111-111111111111", providerMessageId: "<first@mail.example>",
+    toEmail: "prospect@example.com", subject: "Subject", sentAt: new Date().toISOString() };
+  const followUp = { id: "request-2", fromEmail: sender, toEmail: "prospect@example.com", subject: "Re: Subject",
+    body: "Follow-up body", raw: "unused" };
+  async function connected(options: Parameters<typeof mockServer>[0]) {
+    const mock = mockServer(options);
+    const transport = new McpEmailTransport(config, new MemoryTokens(), mock.request);
+    const authorization = await transport.beginAuthorization();
+    await transport.finishAuthorization("code", authorization.state, authorization.state);
+    return { mock, transport, session: await transport.authorizedSession() };
+  }
+  const calledTools = (mock: ReturnType<typeof mockServer>) => mock.calls
+    .filter(({ payload }) => payload?.method === "tools/call").map(({ payload }) => payload!.params.name as string);
+
+  it("sends a follow-up in the thread of the recorded sent copy after verifying it", async () => {
+    const { mock, transport, session } = await connected({ mailbox: [original] });
+    const result = await transport.send(session, { ...followUp, replyTo: { ...replyTo, sentCopy: { folder: "Sent Items", uid: 41 } } });
+    assert.equal(result.receiptId, "<follow-up@mail.example>");
+    assert.deepEqual(result.sentCopy, { folder: "Sent Items", uid: 99 });
+    assert.ok(!calledTools(mock).includes("search_mail"));
+    assert.ok(!calledTools(mock).includes("send_email"));
+    const call = mock.calls.find(({ payload }) => payload?.params?.name === "send_follow_up");
+    assert.deepEqual(call?.payload?.params.arguments, { accountId: "account-1", sourceFolder: "Sent Items",
+      sourceUid: 41, text: "Follow-up body", replyAll: false });
+  });
+
+  it("finds an older sent email by searching the Sent folder and matching its Message-ID", async () => {
+    const decoy = { ...original, uid: 40, messageId: "<other@mail.example>" };
+    const { mock, transport, session } = await connected({ mailbox: [decoy, original] });
+    await transport.send(session, { ...followUp, replyTo });
+    const call = mock.calls.find(({ payload }) => payload?.params?.name === "send_follow_up");
+    assert.equal(call?.payload?.params.arguments.sourceUid, 41);
+    const search = mock.calls.find(({ payload }) => payload?.params?.name === "search_mail");
+    assert.equal(search?.payload?.params.arguments.folder, "Sent Items");
+  });
+
+  it("accepts a sent copy whose stored Message-ID differs when recipient, subject, and time match", async () => {
+    const stored = { ...original, messageId: "<rewritten@mail.example>" };
+    const { mock, transport, session } = await connected({ mailbox: [stored] });
+    await transport.send(session, { ...followUp, replyTo });
+    const call = mock.calls.find(({ payload }) => payload?.params?.name === "send_follow_up");
+    assert.equal(call?.payload?.params.arguments.sourceUid, 41);
+
+    const old = await connected({ mailbox: [{ ...stored, date: new Date(Date.now() - 86_400_000).toISOString() }] });
+    await assert.rejects(old.transport.send(old.session, { ...followUp, replyTo }), /did not match/);
+    const twins = await connected({ mailbox: [stored, { ...stored, uid: 42 }] });
+    await assert.rejects(twins.transport.send(twins.session, { ...followUp, replyTo }), /several sent emails/);
+    assert.ok(!calledTools(twins.mock).includes("send_follow_up"));
+  });
+
+  it("never sends when the original cannot be verified or the follow-up tool is missing", async () => {
+    const wrongRecipient = { ...original, to: ["someone-else@example.com"] };
+    const first = await connected({ mailbox: [wrongRecipient] });
+    await assert.rejects(first.transport.send(first.session, { ...followUp, replyTo: { ...replyTo, sentCopy: { folder: "Sent Items", uid: 41 } } }),
+      (error: unknown) => error instanceof EmailTransportError && !error.uncertain && /Follow-up not sent/.test(error.message));
+    assert.ok(!calledTools(first.mock).includes("send_follow_up"));
+    assert.ok(!calledTools(first.mock).includes("send_email"));
+
+    const missing = await connected({ mailbox: [original], omitFollowUpTool: true });
+    await assert.rejects(missing.transport.send(missing.session, { ...followUp, replyTo: { ...replyTo, sentCopy: { folder: "Sent Items", uid: 41 } } }),
+      /send_follow_up is not advertised/);
+    assert.ok(!calledTools(missing.mock).includes("send_email"));
   });
 
   it("treats a JSON-RPC validation error as a definite rejection", async () => {

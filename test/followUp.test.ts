@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { openDatabase } from "../src/db/database.js";
 import { OutboundStore } from "../src/db/store.js";
 import { GmailClient, type GmailTokens, type TokenStore } from "../src/gmail/client.js";
-import { EmailSending } from "../src/gmail/sending.js";
+import { EmailSending, TEST_FOLLOW_UP_BODY } from "../src/gmail/sending.js";
 import { renderFollowUps } from "../src/web/followUps.js";
 import { renderProspectStages } from "../src/web/prospectStages.js";
 import { buildPrompt, validateRequest } from "../src/workflows/runner.js";
@@ -75,7 +75,7 @@ describe("Follow-ups", () => {
       f.store.approveOutreachForSending(followUp.id);
       const expected = { fromEmail: sender, toEmail: "pat@example.com", subject: followUp.subject, body: followUp.body };
       await assert.rejects(f.sending.sendApproved(followUp.id, expected), /not due until/);
-      assert.match(renderFollowUps(f.store, f.campaign.id), /Sending unlocks on/);
+      assert.match(renderFollowUps(f.store, f.campaign.id), /Sending unlocks [A-Z][a-z]{2} [0-9]{1,2}, [0-9]{4}/);
       f.backdate(7);
       await f.sending.sendApproved(followUp.id, expected);
       const payload = JSON.parse(String(f.requests[1]!.body)) as { raw: string; threadId?: string };
@@ -116,6 +116,36 @@ describe("Follow-ups", () => {
       assert.match(prompt, /Do not approve, schedule, or send anything/);
       f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_BODY" });
       assert.throws(() => validateRequest(f.store, { ...request, outreachIds: [f.first.id] }), /no follow-up/);
+    } finally { f.db.close(); }
+  });
+
+  it("sends a threaded test follow-up to the original test recipient", async () => {
+    const f = await sentFixture();
+    try {
+      const parent = await f.sending.sendTest("me@example.net", "22222222-2222-4222-8222-222222222222", sender);
+      const reply = await f.sending.sendTestFollowUp(parent.id, "33333333-3333-4333-8333-333333333333", sender);
+      assert.equal(reply.kind, "TEST");
+      assert.equal(reply.toEmail, "me@example.net");
+      assert.equal(reply.subject, `Re: ${parent.subject}`);
+      assert.equal(reply.body, TEST_FOLLOW_UP_BODY);
+      const payload = JSON.parse(String(f.requests.at(-1)!.body)) as { raw: string; threadId?: string };
+      assert.equal(payload.threadId, "thread-1");
+      assert.match(Buffer.from(payload.raw, "base64url").toString("utf8"), new RegExp(`In-Reply-To: <${parent.id}@outbound-agent.local>`));
+      await assert.rejects(f.sending.sendTestFollowUp(f.firstDelivery.id, "44444444-4444-4444-8444-444444444444", sender), /sent test email/);
+    } finally { f.db.close(); }
+  });
+
+  it("blocks follow-ups whose recipient or transport differs from the first email", async () => {
+    const f = await sentFixture();
+    try {
+      const followUp = f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_BODY" });
+      f.store.approveOutreachForSending(followUp.id);
+      f.backdate(7);
+      const expected = { fromEmail: sender, toEmail: "pat@example.com", subject: followUp.subject, body: followUp.body };
+      await assert.rejects(f.sending.sendApproved(followUp.id, { ...expected, toEmail: "other@example.com" }), /first email went to/);
+      f.db.prepare("UPDATE email_deliveries SET provider = 'mcp' WHERE id = ?").run(f.firstDelivery.id);
+      await assert.rejects(f.sending.sendApproved(followUp.id, expected), /sent with mcp/);
+      assert.equal(f.requests.length, 1);
     } finally { f.db.close(); }
   });
 });
