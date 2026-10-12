@@ -16,6 +16,11 @@ export function followUpDueAt(sentAt: string): Date {
   return new Date(new Date(sentAt).getTime() + FOLLOW_UP_DELAY_DAYS * 24 * 60 * 60 * 1000);
 }
 
+/** Local date and time a follow-up unlocks, e.g. "Oct 13, 2026, 2:34 PM". */
+export function formatDueAt(date: Date): string {
+  return date.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+}
+
 /** Follow-ups keep the original subject so they thread under the first touch. */
 export function followUpSubject(subject: string): string {
   return /^re:/i.test(subject) ? subject : `Re: ${subject}`;
@@ -658,7 +663,7 @@ export class OutboundStore {
       if (parent.status !== "SENT" || !parent.sentAt) throw new WorkflowError("The first-touch email has not been sent");
       const due = followUpDueAt(parent.sentAt);
       if (Date.now() < due.getTime()) {
-        throw new WorkflowError(`This follow-up is not due until ${due.toISOString().slice(0, 10)}`);
+        throw new WorkflowError(`This follow-up is not due until ${formatDueAt(due)}`);
       }
     }
     return draft;
@@ -722,7 +727,9 @@ export class OutboundStore {
     if (!changed) throw new WorkflowError("Only a new send attempt may be dispatched");
   }
 
-  completeEmailDelivery(id: string, result: { receiptId: string; messageId?: string; threadId?: string }): EmailDelivery {
+  completeEmailDelivery(id: string, result: {
+    receiptId: string; messageId?: string; threadId?: string; sentCopy?: { folder: string; uid: number };
+  }): EmailDelivery {
     return this.db.transaction(() => {
       const delivery = this.getEmailDelivery(id);
       if (!delivery || !["SENDING", "UNCERTAIN"].includes(delivery.status)) {
@@ -731,8 +738,9 @@ export class OutboundStore {
       if (!result.receiptId) throw new WorkflowError("Email provider must confirm a delivery receipt");
       const sentAt = now();
       this.db.prepare(`UPDATE email_deliveries SET status = 'SENT', provider_receipt = ?,
-        gmail_message_id = ?, gmail_thread_id = ?, finished_at = ?, error = NULL WHERE id = ?`)
-        .run(result.receiptId, result.messageId ?? null, result.threadId ?? null, sentAt, id);
+        gmail_message_id = ?, gmail_thread_id = ?, sent_folder = ?, sent_uid = ?, finished_at = ?, error = NULL WHERE id = ?`)
+        .run(result.receiptId, result.messageId ?? null, result.threadId ?? null,
+          result.sentCopy?.folder ?? null, result.sentCopy?.uid ?? null, sentAt, id);
       if (delivery.outreachId !== null) {
         // Record what the provider actually accepted; do not re-check approvals after dispatch.
         this.db.prepare("UPDATE outreach SET status = 'SENT', sent_at = ?, gmail_thread_id = ? WHERE id = ?")
@@ -993,7 +1001,9 @@ function emailDeliveryFromRow(row: Row): EmailDelivery {
     toEmail: text(row, "to_email"), subject: text(row, "subject"), body: text(row, "body"),
     status: text(row, "status") as EmailDelivery["status"], providerReceipt: nullableText(row, "provider_receipt"),
     gmailMessageId: nullableText(row, "gmail_message_id"),
-    gmailThreadId: nullableText(row, "gmail_thread_id"), error: nullableText(row, "error"),
+    gmailThreadId: nullableText(row, "gmail_thread_id"),
+    sentFolder: nullableText(row, "sent_folder"), sentUid: nullableInteger(row, "sent_uid"),
+    error: nullableText(row, "error"),
     createdAt: text(row, "created_at"), finishedAt: nullableText(row, "finished_at"),
   };
 }
