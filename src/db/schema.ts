@@ -418,4 +418,8 @@ export const migrations: readonly string[] = [
     CREATE INDEX workflow_runs_campaign_requested_idx ON workflow_runs(campaign_id, requested_at DESC);
     CREATE INDEX workflow_runs_status_idx ON workflow_runs(status);
   `,
+  `
+    ALTER TABLE email_deliveries ADD COLUMN sent_folder TEXT;
+    ALTER TABLE email_deliveries ADD COLUMN sent_uid INTEGER CHECK (sent_uid IS NULL OR sent_uid > 0);
+  `,
 ];
