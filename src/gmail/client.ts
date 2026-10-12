@@ -137,7 +137,8 @@ export class GmailClient implements EmailTransport {
     try {
       response = await this.request("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
         method: "POST", headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(message.threadId ? { raw: message.raw, threadId: message.threadId } : { raw: message.raw }), signal: AbortSignal.timeout(20_000),
+        body: JSON.stringify(message.replyTo?.threadId
+          ? { raw: message.raw, threadId: message.replyTo.threadId } : { raw: message.raw }), signal: AbortSignal.timeout(20_000),
       });
     } catch { throw new GmailSendError("Gmail did not confirm delivery. Check Gmail Sent; automatic retry is blocked.", true); }
     if (!response.ok) {

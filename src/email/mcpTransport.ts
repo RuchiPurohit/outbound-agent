@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { EmailMessage, EmailTransport, EmailTransportResult, EmailTransportSession } from "./transport.js";
+import type { EmailMessage, EmailTransport, EmailTransportResult, EmailTransportSession, ReplySource } from "./transport.js";
 import { EmailTransportError } from "./transport.js";
 
 export interface McpEmailConfig {
@@ -10,6 +10,7 @@ export interface McpEmailConfig {
   expectedSender: string;
   profileTool?: string;
   sendTool?: string;
+  followUpTool?: string;
   accountId?: string;
   scopes?: string[];
 }
@@ -71,7 +72,8 @@ interface PendingAuthorization {
 }
 
 const protocolVersion = "2025-06-18";
-const defaultScopes = ["profile", "mail:read", "mail:send"];
+// mail:write is required by the server's send_follow_up tool for threaded follow-ups.
+const defaultScopes = ["profile", "mail:read", "mail:send", "mail:write"];
 
 export class McpEmailTransport implements EmailTransport {
   readonly id = "mcp";
@@ -198,6 +200,7 @@ export class McpEmailTransport implements EmailTransport {
       throw new EmailTransportError("Connected MCP mailbox changed. Review the send confirmation again.", false);
     }
     if (!session.accountId) throw new EmailTransportError("MCP mail account could not be resolved.", false);
+    if (message.replyTo) return this.sendFollowUp(session, message, message.replyTo);
     const result = await this.callTool(this.config.sendTool, { accountId: session.accountId,
       to: message.toEmail, subject: message.subject, body: message.body, idempotency_key: message.id },
     session.accessToken, ["accountId", "to", "subject", "body|text"]);
@@ -206,7 +209,120 @@ export class McpEmailTransport implements EmailTransport {
     // A successful tools/call is the provider acknowledgement. Some MCP mail
     // servers intentionally return no provider identifiers after send_mail.
     // Preserve a stable local receipt without pretending it is a message ID.
-    return { receiptId: messageId ?? `mcp-ack:${message.id}`, messageId, threadId };
+    return { receiptId: messageId ?? `mcp-ack:${message.id}`, messageId, threadId, sentCopy: this.sentCopy(result) };
+  }
+
+  // Never falls back to a new conversation: a follow-up is either threaded or not sent.
+  private async sendFollowUp(session: EmailTransportSession, message: EmailMessage, replyTo: ReplySource): Promise<EmailTransportResult> {
+    let source: { folder: string; uid: number };
+    try {
+      source = await this.locateSentCopy(session, replyTo);
+    } catch (error) {
+      throw new EmailTransportError(`Follow-up not sent: ${error instanceof Error ? error.message : String(error)}`, false);
+    }
+    const result = await this.callTool(this.config.followUpTool || "send_follow_up", { accountId: session.accountId,
+      sourceFolder: source.folder, sourceUid: source.uid, text: message.body, replyAll: false },
+    session.accessToken, ["accountId", "sourceFolder", "sourceUid", "text"]);
+    const messageId = this.findString(result, ["messageId", "message_id", "id"]);
+    const threadId = this.findString(result, ["threadId", "thread_id"]);
+    return { receiptId: messageId ?? `mcp-ack:${message.id}`, messageId, threadId, sentCopy: this.sentCopy(result) };
+  }
+
+  // The follow-up tool derives recipients from the source message, so a source is used only
+  // after get_message confirms its recipient plus its Message-ID, or else its exact subject
+  // and send time. Some servers return a send ID that differs from the stored Message-ID.
+  private async locateSentCopy(session: EmailTransportSession, replyTo: ReplySource): Promise<{ folder: string; uid: number }> {
+    const candidates = replyTo.sentCopy ? [replyTo.sentCopy] : await this.searchSentCopies(session, replyTo);
+    const knownId = replyTo.providerMessageId && !replyTo.providerMessageId.startsWith("mcp-ack:")
+      ? normalizeMessageId(replyTo.providerMessageId) : undefined;
+    const sentAt = Date.parse(replyTo.sentAt);
+    const checked = await Promise.all(candidates.map(async (candidate) => {
+      const found = await this.callTool("get_message", { accountId: session.accountId, folder: candidate.folder,
+        uid: candidate.uid }, session.accessToken, ["accountId", "folder", "uid"]);
+      const strings = (keys: string[]) => this.deepValues(found, keys).filter((value): value is string => typeof value === "string");
+      return { candidate,
+        recipient: this.deepValues(found, ["to"]).some((value) => emailsIn(value).includes(replyTo.toEmail.toLowerCase())),
+        messageId: !!knownId && strings(["messageid", "rfcmessageid", "internetmessageid"]).some((value) => normalizeMessageId(value) === knownId),
+        subject: strings(["subject"]).some((value) => value.trim() === replyTo.subject.trim()),
+        sentNearby: strings(["date"]).some((value) => Math.abs(Date.parse(value) - sentAt) <= 10 * 60 * 1000) };
+    }));
+    const addressed = checked.filter(({ recipient }) => recipient);
+    const byId = addressed.find(({ messageId }) => messageId);
+    if (byId) return byId.candidate;
+    // A location reported by the send tool itself needs only the subject to confirm it.
+    const byContent = addressed.filter(({ subject, sentNearby }) => subject && (replyTo.sentCopy || sentNearby));
+    if (byContent.length === 1) return byContent[0]!.candidate;
+    throw new Error(byContent.length
+      ? "several sent emails match the original subject, recipient, and time; the original could not be identified safely."
+      : !candidates.length ? `no email to ${replyTo.toEmail} was found in the Sent folder around ${replyTo.sentAt}.`
+      : !addressed.length ? `the sent email found was not addressed to ${replyTo.toEmail}.`
+      : "the sent email found did not match the original Message-ID, subject, and send time.");
+  }
+
+  private async searchSentCopies(session: EmailTransportSession, replyTo: ReplySource): Promise<Array<{ folder: string; uid: number }>> {
+    const folders = await this.callTool("list_mail_folders", { accountId: session.accountId }, session.accessToken, ["accountId"])
+      .then((result) => this.sentFolderNames(result));
+    const sentAt = Date.parse(replyTo.sentAt);
+    const window = 2 * 24 * 60 * 60 * 1000;
+    const found: Array<{ folder: string; uid: number }> = [];
+    for (const folder of folders) {
+      const result = await this.callTool("search_mail", { accountIds: [session.accountId], folder, to: replyTo.toEmail,
+        since: new Date(sentAt - window).toISOString(), before: new Date(sentAt + window).toISOString(), limit: 50 },
+      session.accessToken, ["folder", "to"]);
+      this.visitRecords(result, (record) => {
+        const uid = Number(record.uid);
+        const recordFolder = typeof record.folder === "string" ? record.folder : folder;
+        if (Number.isSafeInteger(uid) && uid > 0 && !found.some((item) => item.folder === recordFolder && item.uid === uid)) {
+          found.push({ folder: recordFolder, uid });
+        }
+      });
+    }
+    return found;
+  }
+
+  private sentFolderNames(result: McpResult): string[] {
+    const names = new Set<string>();
+    this.visitRecords(result, (record) => {
+      const name = [record.path, record.name, record.folder].find((value) => typeof value === "string") as string | undefined;
+      const flags = JSON.stringify([record.specialUse, record.special_use, record.flags, record.attributes]);
+      if (name && (/\\Sent/i.test(flags) || /sent/i.test(name))) names.add(name);
+    });
+    return names.size ? [...names] : ["Sent Items"];
+  }
+
+  private sentCopy(result: McpResult): { folder: string; uid: number } | undefined {
+    for (const source of this.resultSources(result)) {
+      const copy = source && typeof source === "object" ? (source as Record<string, unknown>).sentCopy : undefined;
+      if (!copy || typeof copy !== "object") continue;
+      const { folder, uid } = copy as Record<string, unknown>;
+      if (typeof folder === "string" && folder && Number.isSafeInteger(Number(uid)) && Number(uid) > 0) {
+        return { folder, uid: Number(uid) };
+      }
+    }
+    return undefined;
+  }
+
+  /** Values for keys (compared case- and punctuation-insensitively), including name/value header lists. */
+  private deepValues(result: McpResult, keys: string[]): unknown[] {
+    const values: unknown[] = [];
+    const normalize = (key: string): string => key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    this.visitRecords(result, (record) => {
+      for (const [key, value] of Object.entries(record)) if (keys.includes(normalize(key))) values.push(value);
+      if (typeof record.name === "string" && keys.includes(normalize(record.name)) && "value" in record) values.push(record.value);
+    });
+    return values;
+  }
+
+  private visitRecords(result: McpResult, visit: (record: Record<string, unknown>) => void): void {
+    const seen = new Set<unknown>();
+    const walk = (value: unknown): void => {
+      if (!value || typeof value !== "object" || seen.has(value)) return;
+      seen.add(value);
+      if (Array.isArray(value)) { value.forEach(walk); return; }
+      visit(value as Record<string, unknown>);
+      Object.values(value).forEach(walk);
+    };
+    this.resultSources(result).forEach(walk);
   }
 
   async disconnect(): Promise<void> {
@@ -243,7 +359,8 @@ export class McpEmailTransport implements EmailTransport {
     }
     if (typeof token.scope === "string") {
       const granted = new Set(token.scope.split(/\s+/));
-      if (this.scopes().some((scope) => !granted.has(scope))) throw new Error("MCP OAuth did not grant the requested permissions.");
+      const missing = this.scopes().filter((scope) => !granted.has(scope));
+      if (missing.length) throw new Error(`MCP OAuth did not grant ${missing.join(", ")}. Reconnect Custom Mail MCP on the Email connections page and approve every requested permission.`);
     }
     return token;
   }
@@ -320,7 +437,8 @@ export class McpEmailTransport implements EmailTransport {
     const result = (called.value.result ?? {}) as McpResult;
     if (result.isError) {
       const detail = result.content?.find(({ text }) => text)?.text ?? "MCP tool rejected the request.";
-      throw new EmailTransportError(detail, false);
+      throw new EmailTransportError(/scope\b.*\brequired/i.test(detail)
+        ? `${detail}. Reconnect Custom Mail MCP on the Email connections page to grant it.` : detail, false);
     }
     return result;
   }
@@ -389,3 +507,7 @@ export class McpEmailTransport implements EmailTransport {
   }
   private isHttps(value: string): boolean { try { return new URL(value).protocol === "https:"; } catch { return false; } }
 }
+
+const normalizeMessageId = (value: string): string => value.trim().replace(/^<|>$/g, "").toLowerCase();
+const emailsIn = (value: unknown): string[] =>
+  (JSON.stringify(value ?? "").match(/[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) ?? []).map((email) => email.toLowerCase());

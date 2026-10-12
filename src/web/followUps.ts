@@ -1,4 +1,4 @@
-import { FOLLOW_UP_DELAY_DAYS, followUpDueAt, type OutboundStore } from "../db/store.js";
+import { FOLLOW_UP_DELAY_DAYS, followUpDueAt, formatDueAt, type OutboundStore } from "../db/store.js";
 import type { Outreach } from "../db/types.js";
 import { listFollowUpCandidates } from "../workflows/runner.js";
 import { renderOutreachReview } from "./prospectStages.js";
@@ -7,15 +7,23 @@ const escapeHtml = (value: unknown): string => String(value ?? "")
   .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
   .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
 
-const day = (date: Date): string => date.toISOString().slice(0, 10);
+const day = (date: Date): string => date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+/** Calendar days from today to the due date, in local time: 0 is today, 1 is tomorrow. */
+function calendarDaysUntil(date: Date): number {
+  const midnight = (value: Date): number => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  return Math.round((midnight(date) - midnight(new Date())) / (24 * 60 * 60 * 1000));
+}
 
 /** Badge text and class describing where a sent email is in its follow-up cycle. */
 function followUpState(sent: Outreach, followUp: Outreach | undefined, dueAt: Date): { label: string; css: string } {
   if (sent.status === "REPLIED") return { label: "Replied", css: "APPROVED" };
   if (followUp?.status === "SENT") return { label: "Follow-up sent", css: "SENT" };
-  const days = Math.ceil((dueAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
-  if (days <= 0) return { label: followUp ? "Follow-up due" : "Follow-up due · no draft", css: "PENDING" };
-  return { label: `Follow-up due ${day(dueAt)} · in ${days} day${days === 1 ? "" : "s"}`, css: "RUNNING" };
+  if (dueAt.getTime() <= Date.now()) return { label: followUp ? "Follow-up due" : "Follow-up due · no draft", css: "PENDING" };
+  const days = calendarDaysUntil(dueAt);
+  const when = days === 0 ? `today ${dueAt.toLocaleTimeString("en-US", { timeStyle: "short" })}`
+    : days === 1 ? "tomorrow" : `in ${days} days`;
+  return { label: `Follow-up due ${day(dueAt)} · ${when}`, css: "RUNNING" };
 }
 
 /** Sent first-touch emails awaiting a reply, with their scheduled follow-up drafts. */
@@ -48,7 +56,7 @@ export function renderFollowUps(store: OutboundStore, campaignId: number, openId
     const replied = outreach.status === "SENT"
       ? `<form method="post" action="/campaigns/${campaignId}/outreach/${outreach.id}/replied" style="margin-top:14px"><button class="secondary" ${active ? "disabled" : ""}>Mark as replied (cancels follow-up)</button></form>`
       : "";
-    return `<details class="email-draft" id="sent-${outreach.id}"${outreach.id === openId ? " open" : ""}><summary>${label(outreach)} · ${escapeHtml(outreach.subject)} <span class="badge ${state.css}">${escapeHtml(state.label)}</span></summary><p class="muted">First email sent ${escapeHtml(new Date(outreach.sentAt!).toLocaleString())}. Follow-up becomes sendable ${day(dueAt)}, ${FOLLOW_UP_DELAY_DAYS} days later.</p><details><summary>First email</summary>${renderOutreachReview(store, campaignId, outreach)}</details>${followUpBlock}${replied}</details>`;
+    return `<details class="email-draft" id="sent-${outreach.id}"${outreach.id === openId ? " open" : ""}><summary>${label(outreach)} · ${escapeHtml(outreach.subject)} <span class="badge ${state.css}">${escapeHtml(state.label)}</span></summary><p class="muted">First email sent ${escapeHtml(new Date(outreach.sentAt!).toLocaleString())}. Follow-up becomes sendable ${escapeHtml(formatDueAt(dueAt))}, ${FOLLOW_UP_DELAY_DAYS} days later.</p><details><summary>First email</summary>${renderOutreachReview(store, campaignId, outreach)}</details>${followUpBlock}${replied}</details>`;
   }).join("");
 
   const due = sent.filter(({ outreach, followUp, dueAt }) => outreach.status === "SENT"
