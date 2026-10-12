@@ -111,6 +111,9 @@ export interface EmailDelivery {
   providerReceipt: string | null;
   gmailMessageId: string | null;
   gmailThreadId: string | null;
+  /** Mailbox folder and UID of the stored sent copy, when the provider reports them. */
+  sentFolder: string | null;
+  sentUid: number | null;
   error: string | null;
   createdAt: string;
   finishedAt: string | null;
