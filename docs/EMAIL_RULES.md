@@ -147,9 +147,12 @@ engagement,” “touch base,” or “circle back.”
 
 ## Follow-up sequence rules
 
-These apply when a dedicated follow-up workflow is implemented. The current
-workflow stores only the first touch and must not put three messages into one
-outreach record.
+Follow-up 1 is implemented by `prompts/follow-up-generation.md`. Each follow-up
+is its own outreach record linked to the first touch, never extra text inside
+the first-touch record. It replies in the same thread (`Re: <original subject>`)
+and can be sent only 7 days after the first touch, after explicit human
+approval and send confirmation, and only if the prospect has not been marked as
+replied. Follow-up 2 is not implemented yet.
 
 - Follow-up 1 adds new, verified information and makes ConvoKit concrete for the
   prospect's workflow. Keep capabilities short. Include pricing or comparisons

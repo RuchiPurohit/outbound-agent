@@ -8,6 +8,23 @@ import type {
 
 type Row = Record<string, unknown>;
 const now = (): string => new Date().toISOString();
+
+export const FOLLOW_UP_DELAY_DAYS = 7;
+
+/** When a follow-up to a sent first touch may be sent. */
+export function followUpDueAt(sentAt: string): Date {
+  return new Date(new Date(sentAt).getTime() + FOLLOW_UP_DELAY_DAYS * 24 * 60 * 60 * 1000);
+}
+
+/** Local date and time a follow-up unlocks, e.g. "Oct 13, 2026, 2:34 PM". */
+export function formatDueAt(date: Date): string {
+  return date.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+}
+
+/** Follow-ups keep the original subject so they thread under the first touch. */
+export function followUpSubject(subject: string): string {
+  return /^re:/i.test(subject) ? subject : `Re: ${subject}`;
+}
 const scoreLimits: CompanyScoreBreakdown = {
   workflowFit: 30, chatImplementation: 20, timingSignal: 15,
   teamFit: 15, stackFit: 10, liveProduct: 10,
@@ -481,19 +498,64 @@ export class OutboundStore {
     })();
   }
 
+  createFollowUp(input: { outreachId: number; body: string }): Outreach {
+    return this.db.transaction(() => {
+      const parent = this.requireOutreach(input.outreachId);
+      if (parent.followUpOf !== null) throw new WorkflowError("Follow-ups attach to a first-touch email");
+      if (parent.status !== "SENT") throw new WorkflowError("Only SENT emails without a reply can receive a follow-up");
+      this.requireDraftEvidence(parent.contactId, parent.researchId ?? undefined);
+      const activeRun = this.listWorkflowRuns().find(({ status }) => status === "RUNNING" || status === "PENDING");
+      if (activeRun) {
+        const selection = activeRun.details ? JSON.parse(activeRun.details) as { outreachIds?: number[] } : {};
+        const company = this.requireCompany(this.requireContact(parent.contactId).companyId);
+        if (activeRun.kind !== "FOLLOW_UP_GENERATION" || activeRun.campaignId !== company.campaignId
+          || !Array.isArray(selection.outreachIds) || !selection.outreachIds.includes(parent.id)) {
+          throw new WorkflowError("Follow-up generation is restricted to checked emails in the active workflow");
+        }
+      }
+      if (this.getFollowUp(parent.id)) throw new WorkflowError("A follow-up already exists for this email");
+      const body = input.body.trim();
+      if (!body || Buffer.byteLength(body) > 100_000) {
+        throw new WorkflowError("Email body must be nonempty and no larger than 100 KB");
+      }
+      const result = this.db.prepare(`
+        INSERT INTO outreach (contact_id, subject, body, status, research_id, follow_up_of)
+        VALUES (?, ?, ?, 'DRAFT', ?, ?)
+      `).run(parent.contactId, followUpSubject(parent.subject), body, parent.researchId, parent.id);
+      return this.getOutreach(Number(result.lastInsertRowid))!;
+    })();
+  }
+
+  /** The current follow-up for a first touch; rejected follow-ups can be regenerated. */
+  getFollowUp(outreachId: number): Outreach | undefined {
+    const row = this.db.prepare(`SELECT * FROM outreach WHERE follow_up_of = ? AND status != 'REJECTED'
+      ORDER BY id DESC LIMIT 1`).get(outreachId) as Row | undefined;
+    return row ? outreachFromRow(row) : undefined;
+  }
+
+  listFollowUps(outreachId: number): Outreach[] {
+    return (this.db.prepare("SELECT * FROM outreach WHERE follow_up_of = ? ORDER BY id")
+      .all(outreachId) as Row[]).map(outreachFromRow);
+  }
+
   rewriteOutreach(id: number, input: { subject: string; body: string; researchId: number }): Outreach {
     const draft = this.requireOutreach(id);
     if (draft.status !== "DRAFT") throw new WorkflowError("Only DRAFT outreach can be rewritten");
     this.requireDraftEvidence(draft.contactId, input.researchId);
+    if (draft.followUpOf !== null && input.researchId !== draft.researchId) {
+      throw new WorkflowError("A follow-up keeps the signal cited by its first-touch email");
+    }
+    const subject = draft.followUpOf !== null ? draft.subject : input.subject;
     this.db.prepare("UPDATE outreach SET subject = ?, body = ?, research_id = ? WHERE id = ?")
-      .run(input.subject, input.body, input.researchId, id);
+      .run(subject, input.body, input.researchId, id);
     return this.getOutreach(id)!;
   }
 
   editOutreach(id: number, input: { subject: string; body: string }): Outreach {
     const draft = this.requireOutreach(id);
     if (draft.status !== "DRAFT") throw new WorkflowError("Only DRAFT outreach can be edited");
-    const subject = input.subject.trim();
+    // Changing a follow-up subject would break threading under the first touch.
+    const subject = draft.followUpOf !== null ? draft.subject : input.subject.trim();
     const body = input.body.trim();
     if (!subject || subject.length > 250 || /[\r\n\x00]/.test(subject)) {
       throw new WorkflowError("Email subject must be nonempty, under 250 characters, and contain no newlines");
@@ -525,10 +587,18 @@ export class OutboundStore {
     return row ? outreachFromRow(row) : undefined;
   }
 
+  /** First-touch outreach for every contact in a campaign. */
+  listCampaignOutreach(campaignId: number): Outreach[] {
+    return (this.db.prepare(`SELECT o.* FROM outreach o
+      JOIN contacts c ON c.id = o.contact_id JOIN companies co ON co.id = c.company_id
+      WHERE co.campaign_id = ? AND o.follow_up_of IS NULL ORDER BY o.id`).all(campaignId) as Row[]).map(outreachFromRow);
+  }
+
+  /** First-touch outreach only; use listFollowUps/getFollowUp for follow-ups. */
   listOutreach(contactId?: number): Outreach[] {
     const rows = contactId === undefined
-      ? this.db.prepare("SELECT * FROM outreach ORDER BY id").all()
-      : this.db.prepare("SELECT * FROM outreach WHERE contact_id = ? ORDER BY id").all(contactId);
+      ? this.db.prepare("SELECT * FROM outreach WHERE follow_up_of IS NULL ORDER BY id").all()
+      : this.db.prepare("SELECT * FROM outreach WHERE contact_id = ? AND follow_up_of IS NULL ORDER BY id").all(contactId);
     return (rows as Row[]).map(outreachFromRow);
   }
 
@@ -573,6 +643,7 @@ export class OutboundStore {
   }
 
   markOutreachReplied(id: number): Outreach {
+    if (this.requireOutreach(id).followUpOf !== null) throw new WorkflowError("Mark the first-touch email as replied");
     return this.transitionOutreach(id, "SENT", "REPLIED");
   }
 
@@ -585,6 +656,15 @@ export class OutboundStore {
     if (!draft.reviewedAt || draft.approvedRecipient !== recipient.address
       || draft.approvedSubject !== draft.subject || draft.approvedBody !== draft.body) {
       throw new WorkflowError("Recipient or content is not covered by the saved approval. Return to draft and approve again.");
+    }
+    if (draft.followUpOf !== null) {
+      const parent = this.requireOutreach(draft.followUpOf);
+      if (parent.status === "REPLIED") throw new WorkflowError("The prospect replied; this follow-up will not be sent");
+      if (parent.status !== "SENT" || !parent.sentAt) throw new WorkflowError("The first-touch email has not been sent");
+      const due = followUpDueAt(parent.sentAt);
+      if (Date.now() < due.getTime()) {
+        throw new WorkflowError(`This follow-up is not due until ${formatDueAt(due)}`);
+      }
     }
     return draft;
   }
@@ -647,7 +727,9 @@ export class OutboundStore {
     if (!changed) throw new WorkflowError("Only a new send attempt may be dispatched");
   }
 
-  completeEmailDelivery(id: string, result: { receiptId: string; messageId?: string; threadId?: string }): EmailDelivery {
+  completeEmailDelivery(id: string, result: {
+    receiptId: string; messageId?: string; threadId?: string; sentCopy?: { folder: string; uid: number };
+  }): EmailDelivery {
     return this.db.transaction(() => {
       const delivery = this.getEmailDelivery(id);
       if (!delivery || !["SENDING", "UNCERTAIN"].includes(delivery.status)) {
@@ -656,8 +738,9 @@ export class OutboundStore {
       if (!result.receiptId) throw new WorkflowError("Email provider must confirm a delivery receipt");
       const sentAt = now();
       this.db.prepare(`UPDATE email_deliveries SET status = 'SENT', provider_receipt = ?,
-        gmail_message_id = ?, gmail_thread_id = ?, finished_at = ?, error = NULL WHERE id = ?`)
-        .run(result.receiptId, result.messageId ?? null, result.threadId ?? null, sentAt, id);
+        gmail_message_id = ?, gmail_thread_id = ?, sent_folder = ?, sent_uid = ?, finished_at = ?, error = NULL WHERE id = ?`)
+        .run(result.receiptId, result.messageId ?? null, result.threadId ?? null,
+          result.sentCopy?.folder ?? null, result.sentCopy?.uid ?? null, sentAt, id);
       if (delivery.outreachId !== null) {
         // Record what the provider actually accepted; do not re-check approvals after dispatch.
         this.db.prepare("UPDATE outreach SET status = 'SENT', sent_at = ?, gmail_thread_id = ? WHERE id = ?")
@@ -909,7 +992,7 @@ function outreachFromRow(row: Row): Outreach {
     sentAt: nullableText(row, "sent_at"), gmailThreadId: nullableText(row, "gmail_thread_id"),
     researchId: nullableInteger(row, "research_id"), reviewedAt: nullableText(row, "reviewed_at"),
     approvedRecipient: nullableText(row, "approved_recipient"), approvedSubject: nullableText(row, "approved_subject"),
-    approvedBody: nullableText(row, "approved_body") };
+    approvedBody: nullableText(row, "approved_body"), followUpOf: nullableInteger(row, "follow_up_of") };
 }
 function emailDeliveryFromRow(row: Row): EmailDelivery {
   return {
@@ -918,7 +1001,9 @@ function emailDeliveryFromRow(row: Row): EmailDelivery {
     toEmail: text(row, "to_email"), subject: text(row, "subject"), body: text(row, "body"),
     status: text(row, "status") as EmailDelivery["status"], providerReceipt: nullableText(row, "provider_receipt"),
     gmailMessageId: nullableText(row, "gmail_message_id"),
-    gmailThreadId: nullableText(row, "gmail_thread_id"), error: nullableText(row, "error"),
+    gmailThreadId: nullableText(row, "gmail_thread_id"),
+    sentFolder: nullableText(row, "sent_folder"), sentUid: nullableInteger(row, "sent_uid"),
+    error: nullableText(row, "error"),
     createdAt: text(row, "created_at"), finishedAt: nullableText(row, "finished_at"),
   };
 }

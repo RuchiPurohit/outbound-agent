@@ -14,6 +14,7 @@ MCP_EMAIL_SENDER_EMAIL=sender@example.com
 MCP_EMAIL_REDIRECT_URI=http://127.0.0.1:3000/gmail/callback
 MCP_EMAIL_PROFILE_TOOL=
 MCP_EMAIL_SEND_TOOL=
+MCP_EMAIL_FOLLOW_UP_TOOL=
 MCP_EMAIL_ACCOUNT_ID=
 ```
 
@@ -35,13 +36,32 @@ returns multiple accounts without a unique matching address. A successful MCP
 acknowledgement is stored as a receipt even when the server omits provider
 message or thread IDs.
 
+## Threaded follow-ups
+
+Follow-ups use the server's `send_follow_up` tool (override with
+`MCP_EMAIL_FOLLOW_UP_TOOL`), which replies in the same thread with
+`In-Reply-To`/`References` headers and derives recipients from the original
+email. Before calling it, the dashboard locates the original's sent copy:
+
+- New sends record the `sentCopy` folder and UID returned by the send tool.
+- Older sends are found with `list_mail_folders` and `search_mail` in the Sent
+  folder.
+
+Every candidate is read with `get_message` and must match the stored
+Message-ID (or, without one, the subject) and the approved recipient. If the
+original cannot be verified, or the follow-up tool is missing, nothing is
+sent; a follow-up never falls back to a new conversation. Use **Send a test
+follow-up** on the Email connections page to check threading with your own
+address.
+
 ## Connect
 
 1. Restart with `npm run dashboard`.
 2. Open `http://127.0.0.1:3000/gmail`.
 3. Choose **Connect Custom Mail MCP**.
 4. Enter the mailbox credentials only on the provider's HTTPS authorization
-   page and approve `profile`, `mail:read`, and `mail:send`. Read access is used
+   page and approve `profile`, `mail:read`, `mail:send`, and `mail:write`
+   (required by the server's `send_follow_up` tool for threaded follow-ups). Read access is used
    to resolve the configured mailbox through `list_mail_accounts`; research and
    drafting workflows still receive no mailbox credentials or message access.
 5. After returning to the dashboard, send only the fixed test email to an

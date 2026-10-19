@@ -16,7 +16,7 @@ export type EmailGuessPattern = "firstname" | "firstname.lastname" | "firstnamel
   | "firstinitiallastname" | "firstname_lastname";
 export type OutreachStatus = "DRAFT" | "APPROVED" | "READY_TO_SEND" | "SENT" | "REPLIED" | "REJECTED";
 export type WorkflowRunKind = "COMPANY_DISCOVERY" | "CONTACT_DISCOVERY" | "EMAIL_DISCOVERY"
-  | "PROSPECT_RESEARCH" | "EMAIL_GENERATION" | "DRAFT_REWRITE";
+  | "PROSPECT_RESEARCH" | "EMAIL_GENERATION" | "DRAFT_REWRITE" | "FOLLOW_UP_GENERATION";
 export type WorkflowRunStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
 
 export interface Campaign {
@@ -92,6 +92,8 @@ export interface Outreach {
   approvedRecipient: string | null;
   approvedSubject: string | null;
   approvedBody: string | null;
+  /** First-touch outreach this follow-up replies to; null for a first touch. */
+  followUpOf: number | null;
 }
 
 export type DeliveryStatus = "PREPARING" | "SENDING" | "SENT" | "FAILED" | "UNCERTAIN";
@@ -109,6 +111,9 @@ export interface EmailDelivery {
   providerReceipt: string | null;
   gmailMessageId: string | null;
   gmailThreadId: string | null;
+  /** Mailbox folder and UID of the stored sent copy, when the provider reports them. */
+  sentFolder: string | null;
+  sentUid: number | null;
   error: string | null;
   createdAt: string;
   finishedAt: string | null;

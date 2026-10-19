@@ -75,4 +75,6 @@ Gmail thread ID. API acceptance is not proof of inbox placement or a reply.
 - Research workers do not receive Google/Gmail environment variables and are
   instructed not to read credentials or send email.
 - Run the dashboard locally only. Do not expose it to the internet. Inbox
-  reading, reply tracking, Gmail drafts, and follow-ups are not implemented.
+  reading, automatic reply tracking, and Gmail drafts are not implemented. Mark
+  replies manually in the Sent & follow-ups tab; threaded follow-ups are sent
+  only after their 7-day wait and an explicit send confirmation.
