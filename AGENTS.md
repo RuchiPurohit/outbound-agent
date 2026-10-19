@@ -54,7 +54,13 @@ Priority 3:
 Priority 4:
 - Engineering Manager
 
-Normally identify at most 2 strong contacts per company.
+Identify at most 2 contacts per company. Prefer strongly verified technical
+contacts, but if none can be verified, include the best publicly identifiable
+founder or plausible decision maker for human review. Do not present an
+unverified technical role or responsibility as verified: preserve the person's
+supported public title, mark unsupported role details `UNKNOWN`, assign a lower
+score, and explain the evidence gap. The human reviewer makes the final call by
+inspecting the sourced profile.
 
 Prefer people whose responsibilities relate to:
 - platform engineering

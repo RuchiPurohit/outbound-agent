@@ -17,8 +17,11 @@ people; it does not discover email addresses or create outreach.
 
 ## Goal
 
-For each approved company in the selected campaign, find at most two strong
-technical contacts.
+For each approved company in the selected campaign, find at most two contacts.
+Prefer strong technical contacts. If no strong technical contact can be
+verified, still persist up to two best publicly identifiable founders or
+plausible decision makers so the human reviewer can inspect their profiles and
+make the final decision.
 
 Target roles in priority order:
 
@@ -39,7 +42,9 @@ their responsibilities involve one or more of:
 - APIs
 
 A lower-title platform owner can be more relevant than a nontechnical founder.
-Do not select a generic CEO or founder without evidence of technical relevance.
+Do not rank a generic CEO or founder as technically relevant without supporting
+evidence. They may be included as a clearly labeled, lower-scored fallback when
+no stronger verified technical contact is available.
 
 ## Required fields
 
@@ -60,6 +65,7 @@ Use one of these normalized role categories:
 - `VP_HEAD_ENGINEERING`
 - `STAFF_PRINCIPAL_ENGINEER`
 - `ENGINEERING_MANAGER`
+- `UNKNOWN` when the public evidence does not establish a target technical role
 
 ## Evidence rules
 
@@ -69,8 +75,13 @@ Use one of these normalized role categories:
 - Every stored role must have a source URL that directly supports it.
 - Use additional sources when needed to prove responsibility relevance.
 - Never invent a person, title, profile URL, responsibility, or claim.
-- If a title or responsibility cannot be verified, mark it `UNKNOWN` and do not
-  select that person unless the remaining evidence is still strong.
+- If a target technical title or responsibility cannot be verified, mark the
+  unsupported role category or detail `UNKNOWN`, lower the role score, and state
+  the evidence gap. This does not prevent selecting a publicly identifiable
+  founder or plausible decision maker as a fallback for human review.
+- A fallback still needs public evidence establishing the person's identity,
+  company affiliation, and supported current public title or relationship. A
+  profile alone is not permission to invent technical responsibility.
 - Check existing contacts first and do not create duplicates.
 
 ## Persistence rules
@@ -85,9 +96,10 @@ Store selected people in `contacts` with:
 
 For each contact, add a contact-level `research` record containing:
 
-- the verified role/responsibility signal
+- the verified role/responsibility signal, or the verified identity and company
+  affiliation for a clearly labeled fallback
 - the direct source URL
-- the relevance reasoning in `notes`
+- the relevance reasoning and any verification gap in `notes`
 
 Do not approve contacts automatically.
 
@@ -103,5 +115,9 @@ Do not approve contacts automatically.
 
 When finished, show contacts grouped by company and ranked by role score. Include
 the exact title, role category, relevance reason, and clickable evidence URL.
-Report any approved company for which no strong verified contact was found.
+For companies without a strong verified technical contact, show the stored
+fallback candidates in a clearly labeled section with their profile/evidence,
+supported public title, low-confidence score, and exact verification gap. Only
+report a company with no contact when no credible publicly identifiable
+candidate could be established at all.
 Confirm that all new contacts remain `DISCOVERED` with email status `UNKNOWN`.
