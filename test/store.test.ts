@@ -55,6 +55,24 @@ describe("OutboundStore", () => {
     assert.equal(company.chatFeatureSourceUrl, null);
   });
 
+  it("edits campaign metadata without changing its identity, status, or companies", () => {
+    const { campaign, company } = campaignAndCompany();
+    store.setCampaignStatus(campaign.id, "ACTIVE");
+
+    const updated = store.updateCampaign(campaign.id, {
+      name: "  Marketplaces · North America  ",
+      segment: "  Buyer and seller marketplaces  ",
+    });
+
+    assert.equal(updated.id, campaign.id);
+    assert.equal(updated.name, "Marketplaces · North America");
+    assert.equal(updated.segment, "Buyer and seller marketplaces");
+    assert.equal(updated.status, "ACTIVE");
+    assert.equal(store.getCompany(company.id)?.campaignId, campaign.id);
+    assert.throws(() => store.updateCampaign(campaign.id, { name: " ", segment: "SaaS" }),
+      /name and segment are required/);
+  });
+
   it("stores sourced chat-feature findings without claiming absence", () => {
     const campaign = store.createCampaign({ name: "Chat check", segment: "SaaS" });
     const present = store.createCompany({ campaignId: campaign.id, name: "Chat Co",

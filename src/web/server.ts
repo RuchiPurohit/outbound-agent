@@ -91,9 +91,10 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
 .badge.SENT{background:var(--green2);color:var(--green)}
 .jump{position:sticky;top:0;z-index:5;display:flex;gap:6px;overflow-x:auto;margin:0 -28px 18px;padding:10px 28px;background:var(--paper);border-bottom:1px solid var(--line)}.jump a{flex:none;padding:5px 11px;border-radius:999px;background:#e8e5dc;color:var(--ink);font-size:12px;font-weight:650}.jump a:hover{text-decoration:none;background:var(--green2);color:var(--green)}.grid>[id],.email-draft{scroll-margin-top:64px}@media(max-width:800px){.jump{margin:0 -14px 14px;padding:10px 14px}}
 .tabs{display:flex;gap:4px;margin:22px 0 0;border-bottom:1px solid var(--line)}.tabs a{padding:10px 14px;color:var(--muted);font-weight:650;border-bottom:2px solid transparent;margin-bottom:-1px}.tabs a:hover{text-decoration:none;color:var(--ink)}.tabs a.active{color:var(--ink);border-bottom-color:var(--green)}
+.campaign-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.campaign-heading .button{flex:none}@media(max-width:600px){.campaign-heading{display:block}.campaign-heading .button{display:inline-block;margin-top:14px}}
 .toasts{position:fixed;top:16px;right:16px;left:16px;margin-left:auto;max-width:420px;z-index:10}.toasts .notice{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;margin:0 0 8px;box-shadow:var(--shadow)}.toasts .dismiss{background:none;color:inherit;padding:0 2px;font-size:16px;line-height:1}.badge.UNCERTAIN,.badge.SENDING,.badge.PREPARING{background:#f2e5c9;color:var(--amber)}
 </style></head><body><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/gmail">Email connections</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
-<script>document.querySelectorAll('.toasts .dismiss').forEach(function(b){b.addEventListener('click',function(){b.parentElement.remove()})});document.querySelectorAll('[data-select]').forEach(function(b){b.addEventListener('click',function(){b.closest('form').querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function(c){c.checked=true})})})</script></body></html>`;
+<script>(function(){var u=new URL(location.href);if(u.searchParams.has('notice')||u.searchParams.has('error')){u.searchParams.delete('notice');u.searchParams.delete('error');history.replaceState(null,'',u.pathname+u.search+u.hash)}})();document.querySelectorAll('.toasts .dismiss').forEach(function(b){b.addEventListener('click',function(){b.parentElement.remove()})});document.querySelectorAll('[data-select]').forEach(function(b){b.addEventListener('click',function(){b.closest('form').querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function(c){c.checked=true})})})</script></body></html>`;
 }
 
 function redirect(
@@ -175,7 +176,11 @@ function runLabel(run: WorkflowRun): string {
 
 function campaignHeader(campaign: Campaign, url: URL, tab: "pipeline" | "follow-ups"): string {
   const due = countDueFollowUps(store, campaign.id);
-  return `<a href="/">← All campaigns</a><section style="margin-top:18px"><span class="eyebrow">Campaign ${campaign.id}</span><h1>${escapeHtml(campaign.name)}</h1><p class="lede">${escapeHtml(campaign.segment)}</p></section>${notices(url)}<nav class="tabs"><a href="/campaigns/${campaign.id}"${tab === "pipeline" ? ' class="active"' : ""}>Pipeline</a><a href="/campaigns/${campaign.id}/follow-ups"${tab === "follow-ups" ? ' class="active"' : ""}>Sent &amp; follow-ups${due ? ` <span class="badge PENDING">${due} due</span>` : ""}</a></nav>${sectionNav(tab)}`;
+  return `<a href="/">← All campaigns</a><section class="campaign-heading" style="margin-top:18px"><div><span class="eyebrow">Campaign ${campaign.id}</span><h1>${escapeHtml(campaign.name)}</h1><p class="lede">${escapeHtml(campaign.segment)}</p></div><a class="button secondary" href="/campaigns/${campaign.id}/edit">Edit campaign</a></section>${notices(url)}<nav class="tabs"><a href="/campaigns/${campaign.id}"${tab === "pipeline" ? ' class="active"' : ""}>Pipeline</a><a href="/campaigns/${campaign.id}/follow-ups"${tab === "follow-ups" ? ' class="active"' : ""}>Sent &amp; follow-ups${due ? ` <span class="badge PENDING">${due} due</span>` : ""}</a></nav>${sectionNav(tab)}`;
+}
+
+function editCampaignPage(campaign: Campaign, url: URL): string {
+  return layout(`Edit ${campaign.name}`, `<a href="/campaigns/${campaign.id}">← Campaign ${campaign.id}</a>${notices(url)}<section class="card" style="max-width:760px;margin-top:18px"><div class="cardhead"><div><span class="eyebrow">Campaign ${campaign.id}</span><h1>Edit campaign</h1></div><span class="badge ${campaign.status}">${humanize(campaign.status)}</span></div><p class="muted">This updates campaign metadata only. Existing companies, contacts, approvals, research, and outreach are preserved.</p><form method="post" action="/campaigns/${campaign.id}/edit"><label><span>Name</span><input name="name" value="${escapeHtml(campaign.name)}" maxlength="200" required></label><label><span>Target segment</span><textarea name="segment" maxlength="5000" required>${escapeHtml(campaign.segment)}</textarea></label><div class="actions"><button type="submit">Save changes</button><a class="button secondary" href="/campaigns/${campaign.id}">Cancel</a></div></form></section>`);
 }
 
 const SECTIONS = {
@@ -354,6 +359,13 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     send(response, 200, dashboardPage(url)); return;
   }
 
+  const campaignEditMatch = url.pathname.match(/^\/campaigns\/(\d+)\/edit$/);
+  if (request.method === "GET" && campaignEditMatch) {
+    const campaign = store.getCampaign(Number(campaignEditMatch[1]));
+    if (!campaign) throw new WorkflowError("Campaign not found");
+    send(response, 200, editCampaignPage(campaign, url)); return;
+  }
+
   const campaignMatch = url.pathname.match(/^\/campaigns\/(\d+)(\/follow-ups)?$/);
   if (request.method === "GET" && campaignMatch) {
     const campaign = store.getCampaign(Number(campaignMatch[1]));
@@ -389,6 +401,15 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       const target = campaignReturn(campaignId, action);
       redirect(response, target.path, { ...target.params, ...message }, target.anchor);
     };
+
+    if (action === "edit") {
+      const name = form.get("name")?.trim() ?? "";
+      const segment = form.get("segment")?.trim() ?? "";
+      if (name.length > 200) throw new WorkflowError("Campaign name cannot exceed 200 characters");
+      if (segment.length > 5000) throw new WorkflowError("Target segment cannot exceed 5000 characters");
+      store.updateCampaign(campaignId, { name, segment });
+      back({ notice: "Campaign updated" }); return;
+    }
 
     const draftAction = action.match(/^outreach\/(\d+)\/(edit|review|rewrite|restore|send|replied)$/);
     if (draftAction) {

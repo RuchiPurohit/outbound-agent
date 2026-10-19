@@ -92,6 +92,16 @@ export class OutboundStore {
     return (this.db.prepare("SELECT * FROM campaigns ORDER BY id").all() as Row[]).map(campaignFromRow);
   }
 
+  updateCampaign(id: number, input: { name: string; segment: string }): Campaign {
+    this.requireCampaign(id);
+    const name = input.name.trim();
+    const segment = input.segment.trim();
+    if (!name || !segment) throw new WorkflowError("Campaign name and segment are required");
+    this.db.prepare("UPDATE campaigns SET name = ?, segment = ? WHERE id = ?")
+      .run(name, segment, id);
+    return this.getCampaign(id)!;
+  }
+
   setCampaignStatus(id: number, status: CampaignStatus): Campaign {
     this.requireCampaign(id);
     this.db.prepare("UPDATE campaigns SET status = ? WHERE id = ?").run(status, id);
