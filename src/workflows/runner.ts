@@ -51,6 +51,7 @@ function workflowPrompt(request: WorkflowRequest): string {
       return [
         "Read AGENTS.md, docs/ICP.md, and prompts/email-discovery.md.",
         `Run email discovery for campaign ${request.campaignId}.`,
+        "Use Treg first for email finding and deliverability verification, following the runbook's cost, provenance, identity-match, and verdict rules.",
         "Process APPROVED contacts whose email status is UNKNOWN, plus EMAIL_NOT_FOUND contacts without a stored guess for guess-only completion.",
         "Persist every sourced result through recordEmailDiscovery and update the readable email report.",
         "After EMAIL_NOT_FOUND, optionally store one clearly labeled, non-sendable company-domain guess through recordEmailGuess, following the runbook's pattern order and evidence rules.",

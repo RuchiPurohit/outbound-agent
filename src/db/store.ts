@@ -340,7 +340,7 @@ export class OutboundStore {
 
       const found = input.emailStatus === "PUBLICLY_LISTED" || input.emailStatus === "VERIFIED";
       if (found && (!input.email || !input.sourceUrl)) {
-        throw new WorkflowError("A found email requires the exact address and a source URL");
+        throw new WorkflowError("A found email requires the exact address and an evidence URL");
       }
       if (!found && input.email) {
         throw new WorkflowError("EMAIL_NOT_FOUND cannot include an email address");

@@ -198,7 +198,7 @@ describe("OutboundStore", () => {
       contactId: contact.id,
       emailStatus: "PUBLICLY_LISTED",
       email: "target@example.com",
-    }), /source URL/);
+    }), /evidence URL/);
 
     const updated = store.recordEmailDiscovery({
       contactId: contact.id,
@@ -209,6 +209,18 @@ describe("OutboundStore", () => {
     assert.equal(updated.email, "target@example.com");
     assert.equal(updated.emailStatus, "PUBLICLY_LISTED");
     assert.equal(store.listResearch(company.id).at(-1)?.sourceUrl, "https://example.com/team");
+
+    const tregContact = store.createContact({ companyId: company.id, name: "Treg Target" });
+    store.reviewContact(tregContact.id, "APPROVED");
+    const tregVerified = store.recordEmailDiscovery({
+      contactId: tregContact.id,
+      emailStatus: "VERIFIED",
+      email: "verified@example.com",
+      sourceUrl: "https://treg.to/calls/call_123",
+      notes: "Treg finder call call_122; verifier call call_123; verdict valid",
+    });
+    assert.equal(tregVerified.emailStatus, "VERIFIED");
+    assert.equal(store.listResearch(company.id).at(-1)?.sourceUrl, "https://treg.to/calls/call_123");
   });
 
   it("stores EMAIL_NOT_FOUND without an address", () => {

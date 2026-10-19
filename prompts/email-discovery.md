@@ -1,9 +1,9 @@
 # Email Discovery Runbook
 
 Use this runbook only after the user has approved contacts. This phase discovers
-public professional business email addresses and, when none is found, records
-one clearly separated best-effort company-domain guess. It does not draft or
-send email.
+professional business email addresses through Treg or credible public sources
+and, when none is found, records one clearly separated best-effort
+company-domain guess. It does not draft or send email.
 
 ## Inputs and campaign selection
 
@@ -26,8 +26,11 @@ Record exactly one outcome for every eligible contact:
 
 - `PUBLICLY_LISTED`: the exact professional business address is visibly
   published on a credible public source.
-- `VERIFIED`: the exact publicly sourced address also has reliable evidence of
-  current deliverability. A domain pattern or syntax check is not verification.
+- `VERIFIED`: either the exact publicly sourced address has reliable evidence of
+  current deliverability, or Treg discovered the address and
+  `treg.people.email.verify` returned the exact verdict `valid`. A finder result,
+  domain pattern, syntax check, unchecked result, `catch_all`, `risky`, or
+  `unknown` verdict is not verification.
 - `EMAIL_NOT_FOUND`: no reliable professional business address was found after
   a reasonable search.
 
@@ -35,6 +38,22 @@ Record exactly one outcome for every eligible contact:
 
 ## Discovery rules
 
+- Use Treg first. Search the catalog for the current email-finding and
+  verification routes, inspect their parameters and prices, then use the routed
+  `treg.people.email.find` and `treg.people.email.verify` capabilities unless a
+  more specific contract is required. Set a reasonable route cost ceiling for
+  each contact and record the actual call IDs and costs.
+- Send the strongest supported identity available: prefer the approved contact's
+  sourced LinkedIn URL; otherwise use the verified public name and canonical
+  company domain. A deliverable mailbox is not by itself proof that it belongs
+  to the intended person, so do not persist a result when the returned identity
+  conflicts with the approved contact.
+- A Treg-discovered address qualifies as `VERIFIED` only when the verifier's
+  exact verdict is `valid`. Store the finder and verifier call IDs, serving
+  providers, identity inputs, verdict, and costs in the research notes. Use the
+  verifier call audit URL as the evidence URL.
+- Treg discovery does not make an address `PUBLICLY_LISTED`. Use that status only
+  when a credible public page displays the exact address.
 - Search only for professional business email addresses belonging to the
   approved contact.
 - Prefer employer-controlled pages, public professional profiles, conference
@@ -45,7 +64,9 @@ Record exactly one outcome for every eligible contact:
 - Never treat an inferred pattern as `PUBLICLY_LISTED` or `VERIFIED`.
 - Never substitute a personal email address for a business email.
 - Do not expose unrelated personal information.
-- If evidence is ambiguous, store `EMAIL_NOT_FOUND`.
+- If evidence is ambiguous, store `EMAIL_NOT_FOUND`. A Treg result with an
+  unchecked, `catch_all`, `risky`, `unknown`, or `invalid` verification outcome
+  must not be stored in `contacts.email`.
 
 ## Guessing strategy
 
@@ -81,7 +102,10 @@ For `PUBLICLY_LISTED` or `VERIFIED`:
 1. Store the exact address in `contacts.email`.
 2. Store the corresponding status in `contacts.email_status`.
 3. Add a contact-level `research` record containing the exact discovery status,
-   address, direct source URL, and concise evidence notes.
+   address, evidence URL, and concise evidence notes. For `PUBLICLY_LISTED`, the
+   evidence URL is the page displaying the address. For Treg-backed `VERIFIED`,
+   it is the verifier call audit URL and the notes contain the finder/verifier
+   provenance required above.
 
 For `EMAIL_NOT_FOUND`:
 

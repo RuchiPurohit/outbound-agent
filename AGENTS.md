@@ -109,10 +109,20 @@ If something cannot be verified, mark it UNKNOWN.
 
 ## Email discovery
 
-Search for a public professional business address before generating any guess.
-An inferred address is never considered public, verified, or sendable. Store at
-most one best guess only after recording `EMAIL_NOT_FOUND`, using the separate
-guess fields and `recordEmailGuess`; never put a guess in `contacts.email`.
+Use Treg first for professional business email discovery and deliverability
+verification. A Treg-discovered address may be stored as `VERIFIED` without a
+public listing only when `treg.people.email.verify` returns the exact verdict
+`valid`. Record the finder and verifier call IDs, serving providers, identity
+inputs, and verification verdict in the research evidence. `catch_all`,
+`risky`, `unknown`, an unchecked result, or a finder result by itself is not
+`VERIFIED`. A Treg result is not `PUBLICLY_LISTED` unless a credible public page
+displays the exact address.
+
+Search for a reliable professional business address before generating any
+guess. An address inferred locally from a pattern is never considered public,
+verified, or sendable. Store at most one best guess only after recording
+`EMAIL_NOT_FOUND`, using the separate guess fields and `recordEmailGuess`; never
+put a guess in `contacts.email`.
 
 Prefer a publicly demonstrated same-domain employee pattern. Otherwise use the
 ordered common patterns in `prompts/email-discovery.md`. Record the pattern,
@@ -190,8 +200,9 @@ discovered companies.
 When the user asks to "run email discovery", read and execute
 `prompts/email-discovery.md` against the live SQLite database. Use a campaign ID
 supplied by the user; otherwise use the most recently created campaign that has
-approved contacts. Process only approved contacts and never infer an address
-from an email pattern.
+approved contacts. Process only approved contacts. Use Treg first for email
+finding and verification, and never infer a discovered address locally from an
+email pattern.
 
 Prospect research and email generation are separate dashboard workflows:
 `prompts/prospect-research.md` and `prompts/email-generation.md`.
