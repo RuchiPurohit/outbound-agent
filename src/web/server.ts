@@ -57,6 +57,35 @@ const escapeHtml = (value: unknown): string => String(value ?? "")
 const humanize = (value: string): string => value.toLowerCase().replaceAll("_", " ")
   .replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
 
+// While a workflow runs, polls the current page every 3s and swaps only the sections whose
+// server HTML changed, keeping scroll position, checked boxes, typed input, and open <details>.
+const LIVE_REFRESH_SCRIPT = `(function(){
+if(!document.body.hasAttribute('data-live-refresh'))return;
+var main=document.querySelector('main.shell'),last=new Map();
+function regions(root){var out=[];Array.prototype.forEach.call(root.children,function(el){
+if(el.classList.contains('toasts'))return;
+if(el.classList.contains('grid')){Array.prototype.forEach.call(el.children,function(c,i){out.push({key:'grid:'+(c.id||i),el:c})});return}
+out.push({key:(el.id||el.tagName+'.'+el.className)+':'+out.length,el:el})});return out}
+regions(main).forEach(function(r){last.set(r.key,r.el.outerHTML)});
+function keep(el){var s={checks:[],values:[],open:[]};
+el.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked!==c.defaultChecked)s.checks.push([c.name,c.value,c.checked])});
+el.querySelectorAll('input:not([type=checkbox]):not([type=hidden]),textarea,select').forEach(function(f){if(f.name&&f.value!==f.defaultValue)s.values.push([f.closest('form')&&f.closest('form').action,f.name,f.value])});
+el.querySelectorAll('details[id]').forEach(function(d){s.open.push([d.id,d.open])});return s}
+function restore(el,s){s.checks.forEach(function(k){el.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.name===k[0]&&c.value===k[1]&&!c.disabled)c.checked=k[2]})});
+s.values.forEach(function(k){el.querySelectorAll('[name]').forEach(function(f){if(f.name===k[1]&&(f.closest('form')&&f.closest('form').action)===k[0])f.value=k[2]})});
+s.open.forEach(function(k){var d=el.querySelector('details[id="'+k[0]+'"]');if(d)d.open=k[1]})}
+function swap(oldEl,html){var t=document.createElement('template');t.innerHTML=html;var n=t.content.firstElementChild;var s=keep(oldEl);var a=document.activeElement,focused=a&&oldEl.contains(a)&&a.name?a.name:null;oldEl.replaceWith(n);restore(n,s);if(focused){var f=n.querySelector('[name="'+focused+'"]');if(f)f.focus()}return n}
+function tick(){var u=new URL(location.href);u.searchParams.delete('notice');u.searchParams.delete('error');u.hash='';
+fetch(u,{headers:{Accept:'text/html'},cache:'no-store'}).then(function(r){return r.ok?r.text():Promise.reject(r.status)}).then(function(html){
+var doc=new DOMParser().parseFromString(html,'text/html'),next=doc.querySelector('main.shell');if(!next)return;
+var cur=regions(main),fresh=regions(next);
+var same=cur.length===fresh.length&&cur.every(function(r,i){return r.key===fresh[i].key});
+if(same){fresh.forEach(function(r,i){var h=r.el.outerHTML;if(last.get(r.key)!==h){last.set(r.key,h);swap(cur[i].el,h)}})}
+else{var toasts=main.querySelector('.toasts');var y=scrollY;main.innerHTML=next.innerHTML;if(toasts&&!main.querySelector('.toasts'))main.prepend(toasts);last.clear();regions(main).forEach(function(r){last.set(r.key,r.el.outerHTML)});scrollTo(0,y)}
+document.title=doc.title;
+if(doc.body.hasAttribute('data-live-refresh'))setTimeout(tick,3000)}).catch(function(){setTimeout(tick,3000)})}
+setTimeout(tick,3000)})();`;
+
 function layout(title: string, body: string, options: { refreshing?: boolean } = {}): string {
   body = body.replace(/<form\b[^>]*method="post"[^>]*>/g,
     (form) => `${form}<input type="hidden" name="csrfToken" value="${csrfToken}">`);
@@ -82,7 +111,7 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
   );
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)} · Outbound</title>${options.refreshing ? '<meta http-equiv="refresh" content="3">' : ""}
+<title>${escapeHtml(title)} · Outbound</title>
 <style>
 :root{--ink:#17211b;--muted:#67736b;--paper:#f4f1e8;--card:#fffdf7;--line:#d9d5c9;--green:#236448;--green2:#dcebdd;--amber:#9a5b16;--red:#9e3c34;--blue:#315d83;--shadow:0 14px 36px rgba(27,36,30,.08)}
 *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.48 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}.shell{max-width:1240px;margin:auto;padding:28px}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px}.brand{font:700 20px/1 ui-monospace,SFMono-Regular,monospace;letter-spacing:-.04em;color:var(--ink)}.brand span{color:var(--green)}h1{font:650 clamp(28px,4vw,46px)/1.05 Georgia,serif;letter-spacing:-.035em;margin:0 0 8px}h2{font-size:19px;margin:0}h3{font-size:15px;margin:0}.lede,.muted{color:var(--muted)}.lede{font-size:17px;margin:0;max-width:760px}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:18px}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:20px}.span4{grid-column:span 4}.span8{grid-column:span 8}.span12{grid-column:span 12}.cardhead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.stat{font:650 34px/1 Georgia,serif;margin:12px 0 4px}.eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:11px;font-weight:750;color:var(--muted)}.button,button{border:0;border-radius:9px;background:var(--green);color:white;padding:10px 14px;font:650 13px/1.2 inherit;cursor:pointer}.button.secondary,button.secondary{background:#e8e5dc;color:var(--ink)}button.danger{background:var(--red)}button:disabled{opacity:.45;cursor:not-allowed}input,textarea,select{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;background:white;color:var(--ink);font:inherit}textarea{min-height:92px;resize:vertical}label{display:block;font-size:13px;font-weight:650;margin-bottom:12px}label span{display:block;margin-bottom:5px}.inline{display:flex;gap:10px;align-items:center}.inline input[type=checkbox]{width:auto}.actions{display:flex;gap:8px;flex-wrap:wrap}.notice{padding:12px 14px;border:1px solid #e4bd78;background:#fff2d9;border-radius:10px;margin:16px 0}.notice.error{border-color:#e1a29c;background:#fae5e2;color:#70261f}.badge{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:750;letter-spacing:.04em;background:#e8e5dc;color:var(--muted)}.badge.APPROVED,.badge.COMPLETED,.badge.VERIFIED,.badge.PUBLICLY_LISTED{background:var(--green2);color:var(--green)}.badge.REJECTED,.badge.FAILED{background:#f4deda;color:var(--red)}.badge.RUNNING,.badge.ACTIVE{background:#dfeaf5;color:var(--blue)}.badge.PENDING,.badge.DISCOVERED,.badge.UNKNOWN{background:#f2e5c9;color:var(--amber)}table{border-collapse:collapse;width:100%;font-size:13px}th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}th,td{padding:11px 9px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}.score{font:700 18px/1 Georgia,serif}.source{max-width:310px}.source a{word-break:break-all}.empty{border:1px dashed var(--line);border-radius:12px;padding:22px;text-align:center;color:var(--muted)}details{border-top:1px solid var(--line);padding:12px 0}details:last-child{padding-bottom:0}summary{cursor:pointer;font-weight:650}pre{white-space:pre-wrap;word-break:break-word;background:#19231d;color:#dcebdd;padding:14px;border-radius:10px;max-height:360px;overflow:auto;font:12px/1.5 ui-monospace,SFMono-Regular,monospace}.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:22px 0}.step{border-top:3px solid var(--line);padding-top:9px;color:var(--muted);font-size:12px}.step strong{display:block;color:var(--ink);font-size:14px}.check{width:16px;height:16px}.tablewrap{overflow-x:auto}.campaign{display:block;color:inherit}.campaign:hover{text-decoration:none;border-color:#9eaa9f}.campaign p{margin:7px 0 0}.footer{margin-top:28px;color:var(--muted);font-size:12px}@media(max-width:800px){.shell{padding:20px 14px}.span4,.span8{grid-column:span 12}.steps{grid-template-columns:1fr}.top{margin-bottom:20px}th:nth-child(5),td:nth-child(5){display:none}}
@@ -95,8 +124,9 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
 .tabs{display:flex;gap:4px;margin:22px 0 0;border-bottom:1px solid var(--line)}.tabs a{padding:10px 14px;color:var(--muted);font-weight:650;border-bottom:2px solid transparent;margin-bottom:-1px}.tabs a:hover{text-decoration:none;color:var(--ink)}.tabs a.active{color:var(--ink);border-bottom-color:var(--green)}
 .campaign-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.campaign-heading .button{flex:none}@media(max-width:600px){.campaign-heading{display:block}.campaign-heading .button{display:inline-block;margin-top:14px}}
 .toasts{position:fixed;top:16px;right:16px;left:16px;margin-left:auto;max-width:420px;z-index:10}.toasts .notice{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;margin:0 0 8px;box-shadow:var(--shadow)}.toasts .dismiss{background:none;color:inherit;padding:0 2px;font-size:16px;line-height:1}.badge.UNCERTAIN,.badge.SENDING,.badge.PREPARING{background:#f2e5c9;color:var(--amber)}
-</style></head><body><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/gmail">Email connections</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
-<script>(function(){var u=new URL(location.href);if(u.searchParams.has('notice')||u.searchParams.has('error')){u.searchParams.delete('notice');u.searchParams.delete('error');history.replaceState(null,'',u.pathname+u.search+u.hash)}})();document.querySelectorAll('.toasts .dismiss').forEach(function(b){b.addEventListener('click',function(){b.parentElement.remove()})});document.querySelectorAll('[data-select]').forEach(function(b){b.addEventListener('click',function(){b.closest('form').querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function(c){c.checked=true})})})</script></body></html>`;
+</style></head><body${options.refreshing ? " data-live-refresh" : ""}><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/gmail">Email connections</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
+<script>(function(){var u=new URL(location.href);if(u.searchParams.has('notice')||u.searchParams.has('error')){u.searchParams.delete('notice');u.searchParams.delete('error');history.replaceState(null,'',u.pathname+u.search+u.hash)}})();document.addEventListener('click',function(e){var b=e.target.closest('.toasts .dismiss');if(b)b.parentElement.remove();b=e.target.closest('[data-select]');if(b)b.closest('form').querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function(c){c.checked=true})});</script>
+<script>${LIVE_REFRESH_SCRIPT}</script></body></html>`;
 }
 
 function redirect(
