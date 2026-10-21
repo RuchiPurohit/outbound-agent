@@ -204,7 +204,7 @@ Structure:
 3. Concrete, conditional business use case.
 4. Two-engineer context and how verified ConvoKit capabilities relate.
 5. Low-friction invitation to a quick 10-minute call.
-6. `Ruchi` and `convokit.app` on separate signature lines.
+6. `Ruchi` and `https://convokit.app/` on separate signature lines.
 
 Never invent personalization.
 

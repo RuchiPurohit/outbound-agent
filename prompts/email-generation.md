@@ -30,7 +30,7 @@ Never expand the selection to other eligible prospects.
    and create no draft.
    Every first touch must follow the required greeting, sourced-observation,
    concrete-use-case, two-engineer context, 10-minute CTA, and two-line
-   `Ruchi` / `convokit.app` signature structure in `docs/EMAIL_RULES.md`.
+   `Ruchi` / `https://convokit.app/` signature structure in `docs/EMAIL_RULES.md`.
 6. Use createOutreach({contactId, subject, body, researchId}) to store one DRAFT.
    researchId must identify the cited prospect signal, not role/email evidence.
    This workflow creates one first-touch only, not follow-ups.

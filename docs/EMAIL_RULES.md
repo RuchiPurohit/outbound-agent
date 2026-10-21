@@ -87,7 +87,10 @@ one of these qualifiers or when the email would require false factual claims.
 - In a separate paragraph, establish the sender context naturally: ConvoKit is
   being built by two engineers who understand the infrastructure beneath chat.
   Relate only 2–4 verified capabilities to the use case; do not claim security,
-  compliance, or business outcomes that have not been verified.
+  compliance, or business outcomes that have not been verified. End that
+  paragraph with the offer: "We can personally help in setting up and
+  customizing the chat for <company>."
+
 - End with one low-pressure invitation to a quick 10-minute conversation to
   understand how the prospect approaches messaging and whether ConvoKit can
   help. Do not ask for a 15-minute call or offer API docs as the primary CTA.
@@ -95,7 +98,7 @@ one of these qualifiers or when the email would require false factual claims.
 
   ```text
   Ruchi
-  convokit.app
+  https://convokit.app/
   ```
 
   Never invent previous contact or a personal relationship.
@@ -107,7 +110,7 @@ Structure:
 3. A valid, concrete business use case tied to that observation.
 4. Two-engineer context and how verified ConvoKit capabilities relate.
 5. A concise 10-minute call invitation.
-6. `Ruchi` followed by `convokit.app` on the next line.
+6. `Ruchi` followed by `https://convokit.app/` on the next line.
 
 Model the rhythm on this pattern without copying prospect facts between emails:
 
@@ -119,14 +122,15 @@ I saw <company> <one verified, specific observation>.
 A similar need could arise when <User A> and <User B> need to <interaction>
 around <specific product object or workflow>.
 
-We're two engineers building ConvoKit around the <2–4 relevant, verified>
-layers teams would otherwise maintain themselves.
+We're two engineers building ConvoKit around <2–4 relevant, verified
+capabilities>, so teams can keep the experience product-native. We can
+personally help in setting up and customizing the chat for <company>.
 
 If that's relevant to the products <company> builds, I'd love to spend 10
 minutes learning how you approach messaging and whether we could help.
 
 Ruchi
-convokit.app
+https://convokit.app/
 ```
 
 If replacing the company name makes most of the email work for another company,
