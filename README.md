@@ -51,6 +51,8 @@ npm run contacts:list -- 1
 npm run contacts:approve -- 1 2 3
 npm run contacts:reject -- 4 5
 npm run emails:discover -- 1
+npm run emails:verify-guesses -- 1
+npm run emails:recover -- 1
 ```
 
 The optional argument to `companies:list` is a campaign ID. Company review
@@ -63,12 +65,40 @@ instructions in `prompts/contact-discovery.md`. It writes verified contacts to
 SQLite but does not research email addresses or create outreach.
 
 `emails:discover` similarly runs `prompts/email-discovery.md` for approved
-contacts only. It stores sourced outcomes in SQLite and writes a readable report
-to `data/campaign-<id>-emails.md`. When no public business address is found, the
-workflow may also show one clearly labeled company-domain guess in a separate
-column. Guesses remain `EMAIL_NOT_FOUND` and are never treated as sourced or
+contacts only, using public sources only (no Treg). It stores sourced outcomes in
+SQLite and writes a readable report to `data/campaign-<id>-emails.md`. When no
+public business address is found, it stores one clearly labeled company-domain
+guess. Guesses remain `EMAIL_NOT_FOUND` and are never treated as sourced or
 verified. They may be researched, drafted, approved, and sent only through the
 same explicit human review and final Gmail confirmation used for sourced emails.
+
+Email discovery is a three-step pipeline:
+
+1. **Discovery (Codex, free):** public sources, then a pattern guess.
+2. **SMTP check (local, free):** runs automatically when discovery finishes,
+   and in the dashboard it then starts prospect research. It asks the domain's
+   mail server to accept `RCPT TO` for the guess, then for the runbook's other
+   patterns (`firstname`, `firstname.lastname`, `firstnamelastname`,
+   `firstinitiallastname`, `firstname_lastname`), and keeps the first accepted
+   address as the guess. A random address is probed to detect catch-all domains.
+   It disconnects without sending mail and never probes `PUBLICLY_LISTED` or
+   `VERIFIED` emails. Verdicts are `VALID`, `INVALID`, `CATCH_ALL`, or `UNKNOWN`
+   (greylisting, IP blocks, or outbound port 25 blocked). A `VALID` guess stays
+   labelled as a guess; an `INVALID` guess cannot be drafted or sent. Re-run it
+   with **SMTP-check guesses** or `emails:verify-guesses`.
+3. **Treg recovery (Codex, paid, manual):** only when you click **Recover with
+   Treg (N)** or run `emails:recover`. It covers guesses whose SMTP result was
+   `INVALID`, `CATCH_ALL`, or `UNKNOWN`. Treg promotes a contact to `VERIFIED`
+   only on an exact `valid` verdict with an identity match. An identity-matched
+   Treg address that verifies only as `catch_all` replaces the pattern guess but
+   stays an unverified guess, labelled with its Treg audit URL. Contacts with a
+   recorded outcome are never sent to Treg again. If Treg fails for credits,
+   quota, or an outage, the dashboard shows "Treg recovery paused" and those
+   contacts retry on the next click. Recovered contacts need **Run prospect
+   research** afterwards.
+
+Optional `.env` overrides for the SMTP check: `SMTP_VERIFY_HELO` (EHLO name,
+default hostname) and `SMTP_VERIFY_FROM` (envelope sender, default `<>`).
 
 If `codex` is not on the shell `PATH`, the command also checks common VS Code,
 VS Code Insiders, Cursor, and Windsurf extension locations. You can override

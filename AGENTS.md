@@ -109,8 +109,14 @@ If something cannot be verified, mark it UNKNOWN.
 
 ## Email discovery
 
-Use Treg first for professional business email discovery and deliverability
-verification. A Treg-discovered address may be stored as `VERIFIED` without a
+Email discovery runs in this order: (1) Codex searches credible public sources
+and stores a pattern guess when none is found, without using Treg; (2) the free,
+deterministic SMTP check probes the guess and the other runbook patterns and
+keeps the first accepted one; (3) Treg runs only as a separate, human-triggered
+recovery for guesses whose SMTP result was `INVALID`, `CATCH_ALL`, or
+`UNKNOWN`. Never call Treg during normal email discovery.
+
+A Treg-discovered address may be stored as `VERIFIED` without a
 public listing only when `treg.people.email.verify` returns the exact verdict
 `valid`. Record the finder and verifier call IDs, serving providers, identity
 inputs, and verification verdict in the research evidence. `catch_all`,
@@ -127,6 +133,25 @@ put a guess in `contacts.email`.
 Prefer a publicly demonstrated same-domain employee pattern. Otherwise use the
 ordered common patterns in `prompts/email-discovery.md`. Record the pattern,
 confidence, and basis. `PATTERN_SUPPORTED` also requires a public source URL.
+
+The SMTP check runs automatically after dashboard email discovery and is also
+available as `emails:verify-guesses`. Its verdict annotates the guess only: a
+`VALID` result never makes a guess public, verified, or `contacts.email`, and
+an `INVALID` guess is not a sendable recipient. When another pattern is
+accepted, it replaces the guess, still labelled as a guess. Never SMTP-probe
+sourced `PUBLICLY_LISTED` or `VERIFIED` addresses.
+
+Treg recovery starts only from the dashboard's Recover with Treg button or
+`emails:recover`, never automatically. It processes only the supplied contact
+IDs, and a contact with a recorded outcome is never recovered twice. Seek a
+fresh sourced business address, verify it, and record the outcome only with
+`recordEmailRecovery`: `VERIFIED` for an exact `valid` verdict with an identity
+match; `CATCH_ALL_CANDIDATE` when an identity-matched finder address on the
+company domain verifies as exactly `catch_all` (it replaces the pattern guess
+but stays an unverified guess); `NOT_FOUND` for every other completed result,
+which keeps the existing guess; `PROVIDER_ERROR` when Treg fails because of
+credits, billing, quota, or an outage, which keeps the guess and requeues the
+contact. Do not expand to other contacts, draft, approve, or send.
 
 If no reliable professional business email can be found:
 
@@ -200,9 +225,9 @@ discovered companies.
 When the user asks to "run email discovery", read and execute
 `prompts/email-discovery.md` against the live SQLite database. Use a campaign ID
 supplied by the user; otherwise use the most recently created campaign that has
-approved contacts. Process only approved contacts. Use Treg first for email
-finding and verification, and never infer a discovered address locally from an
-email pattern.
+approved contacts. Process only approved contacts. Do not use Treg; it runs
+only in the separate post-SMTP recovery. Never infer a discovered address
+locally from an email pattern.
 
 Prospect research and email generation are separate dashboard workflows:
 `prompts/prospect-research.md` and `prompts/email-generation.md`.

@@ -2,6 +2,9 @@ import { spawnSync } from "node:child_process";
 import { openDatabase } from "../db/database.js";
 import { OutboundStore } from "../db/store.js";
 import { resolveCodexExecutable } from "./codexExecutable.js";
+import { SmtpVerifier } from "../email/smtpVerifier.js";
+import { formatSummary, verifyGuessedEmails } from "../email/verifyGuesses.js";
+import { buildPrompt } from "../workflows/runner.js";
 
 const rawCampaignId = process.argv[2];
 const campaignId = Number(rawCampaignId);
@@ -37,16 +40,8 @@ if (!rawCampaignId || !Number.isSafeInteger(campaignId) || campaignId <= 0) {
       process.exit();
     }
 
-    const prompt = [
-      "Read AGENTS.md, docs/ICP.md, and prompts/email-discovery.md.",
-      `Run email discovery for campaign ${campaignId}.`,
-      "Use Treg first for email finding and deliverability verification, following the runbook's cost, provenance, identity-match, and verdict rules.",
-      "Process APPROVED contacts whose email status is UNKNOWN, plus EMAIL_NOT_FOUND contacts without a stored guess for guess-only completion.",
-      "Persist every sourced result through recordEmailDiscovery and show the outcomes.",
-      "After EMAIL_NOT_FOUND, optionally store one clearly labeled, non-sendable company-domain guess through recordEmailGuess, following the runbook's pattern order and evidence rules.",
-      "Never store a guess in contacts.email or treat it as public or verified. Do not draft outreach, create Gmail drafts, or send messages.",
-      "Complete the workflow; do not merely explain how to do it.",
-    ].join(" ");
+    // Same prompt as the dashboard workflow, so the CLI never drifts (e.g. back to Treg-first).
+    const prompt = buildPrompt({ campaignId, kind: "EMAIL_DISCOVERY" });
 
     console.log(
       `Starting Codex email discovery for campaign ${campaignId} `
@@ -66,6 +61,18 @@ if (!rawCampaignId || !Number.isSafeInteger(campaignId) || campaignId <= 0) {
       process.exitCode = 1;
     } else if (result.status !== 0) {
       process.exitCode = result.status ?? 1;
+    } else {
+      // Free step of the pipeline: SMTP-check the new guesses. Treg stays a separate command.
+      const checkDb = openDatabase();
+      try {
+        const checkStore = new OutboundStore(checkDb);
+        const summary = await verifyGuessedEmails(checkStore, campaignId, new SmtpVerifier());
+        console.log(`SMTP guess check: ${formatSummary(summary)}.`);
+        const recoverable = checkStore.listEmailRecoveryCandidates(campaignId).length;
+        if (recoverable) console.log(`${recoverable} contact(s) can be recovered with: npm run emails:recover -- ${campaignId}`);
+      } finally {
+        checkDb.close();
+      }
     }
   }
 }

@@ -3,6 +3,8 @@ import type { SqliteDatabase } from "../db/database.js";
 import { OutboundStore, WorkflowError } from "../db/store.js";
 import type { Outreach, WorkflowRun, WorkflowRunKind } from "../db/types.js";
 import { resolveCodexExecutable } from "../commands/codexExecutable.js";
+import { SmtpVerifier } from "../email/smtpVerifier.js";
+import { formatSummary, verifyGuessedEmails, type MailboxVerifier } from "../email/verifyGuesses.js";
 
 export interface WorkflowRequest {
   campaignId: number;
@@ -48,10 +50,28 @@ function workflowPrompt(request: WorkflowRequest): string {
         "Complete the workflow; do not merely explain how to do it.",
       ].join(" ");
     case "EMAIL_DISCOVERY":
+      if (request.contactIds?.length) {
+        return [
+          "Read AGENTS.md, docs/ICP.md, and prompts/email-discovery.md.",
+          `Run post-SMTP Treg email recovery for campaign ${request.campaignId}.`,
+          `Process ONLY these contact IDs: ${JSON.stringify(request.contactIds)}.`,
+          "Each contact has an EMAIL_NOT_FOUND guess whose SMTP result was invalid, catch-all, or inconclusive.",
+          "Before the first finder call, check the Treg balance if the catalog exposes one.",
+          "Use Treg to find a fresh professional business address for the approved identity; do not submit or preserve the failed guessed address as a discovered result.",
+          "Verify every Treg result, then record exactly one outcome per contact with recordEmailRecovery({contactId, outcome, email, sourceUrl, notes}); never call recordEmailDiscovery or recordEmailGuess in this run.",
+          "outcome VERIFIED only when treg.people.email.verify returns exactly valid and the returned identity matches the approved contact.",
+          "outcome CATCH_ALL_CANDIDATE only when the finder returned an identity-matched address on the company domain and the verifier returned exactly catch_all; it stays an unverified guess.",
+          "outcome NOT_FOUND for every other completed result (risky, unknown, invalid, unchecked, identity mismatch, or no finder result); it keeps the existing guess.",
+          "If a Treg call fails because of credits, billing, quota, rate limits, or a provider outage, stop calling Treg and record outcome PROVIDER_ERROR with the error message in notes for that contact and every remaining contact; these contacts are retried later.",
+          "notes must contain finder/verifier call IDs, providers, identity inputs, verdict, and actual costs; sourceUrl is the verifier audit URL.",
+          "Do not research other contacts, draft outreach, create Gmail drafts, or send messages.",
+          "Complete the workflow; do not merely explain how to do it.",
+        ].join(" ");
+      }
       return [
         "Read AGENTS.md, docs/ICP.md, and prompts/email-discovery.md.",
         `Run email discovery for campaign ${request.campaignId}.`,
-        "Use Treg first for email finding and deliverability verification, following the runbook's cost, provenance, identity-match, and verdict rules.",
+        "Do not use Treg in this run; it runs only in the separate post-SMTP recovery. Search credible public sources only.",
         "Process APPROVED contacts whose email status is UNKNOWN, plus EMAIL_NOT_FOUND contacts without a stored guess for guess-only completion.",
         "Persist every sourced result through recordEmailDiscovery and update the readable email report.",
         "After EMAIL_NOT_FOUND, optionally store one clearly labeled, non-sendable company-domain guess through recordEmailGuess, following the runbook's pattern order and evidence rules.",
@@ -114,12 +134,21 @@ export function validateRequest(store: OutboundStore, request: WorkflowRequest):
     throw new WorkflowError("Approve at least one company before discovering contacts");
   }
   if (request.kind === "EMAIL_DISCOVERY") {
-    const hasTarget = companies
-      .flatMap(({ id }) => store.listContacts(id))
-      .some(({ status, emailStatus, guessedEmail }) => status === "APPROVED"
+    const contacts = companies.flatMap(({ id }) => store.listContacts(id));
+    if (request.contactIds?.length) {
+      if (new Set(request.contactIds).size !== request.contactIds.length) {
+        throw new WorkflowError("Post-SMTP recovery contact IDs must be unique");
+      }
+      const allowed = new Set(store.listEmailRecoveryCandidates(request.campaignId).map(({ id }) => id));
+      if (request.contactIds.some((id) => !Number.isSafeInteger(id) || !allowed.has(id))) {
+        throw new WorkflowError("Every post-SMTP recovery contact must have an invalid, catch-all, or inconclusive pattern guess in this campaign and no earlier Treg recovery");
+      }
+    } else {
+      const hasTarget = contacts.some(({ status, emailStatus, guessedEmail }) => status === "APPROVED"
         && (emailStatus === "UNKNOWN" || (emailStatus === "EMAIL_NOT_FOUND" && !guessedEmail)));
-    if (!hasTarget) {
-      throw new WorkflowError("Approve at least one contact awaiting email discovery or a guess first");
+      if (!hasTarget) {
+        throw new WorkflowError("Approve at least one contact awaiting email discovery or a guess first");
+      }
     }
   }
   const eligible = store.listEligibleProspects(request.campaignId);
@@ -166,17 +195,8 @@ export function listFollowUpCandidates(store: OutboundStore, campaignId: number)
     && eligible.has(outreach.contactId) && !store.getFollowUp(outreach.id));
 }
 
-export function nextWorkflowRequest(store: OutboundStore, finished: WorkflowRequest): WorkflowRequest | undefined {
-  const eligible = store.listResearchEligibleProspects(finished.campaignId);
-  if (finished.kind === "EMAIL_DISCOVERY"
-    && eligible.some(({ id }) => !store.getProspectResearch(id))) {
-    return { campaignId: finished.campaignId, kind: "PROSPECT_RESEARCH" };
-  }
-  // Research stops for explicit checklist selection. Drafts stop for human review.
-  return undefined;
-}
-
 interface RunnerDependencies {
+  verifier?: MailboxVerifier;
   resolveExecutable?: () => string;
   spawnProcess?: (executable: string, args: string[], options: SpawnOptions) => ChildProcess;
 }
@@ -185,9 +205,15 @@ export function launchWorkflow(
   db: SqliteDatabase, request: WorkflowRequest, dependencies: RunnerDependencies = {},
 ): WorkflowRun {
   const store = new OutboundStore(db);
+  assertCampaignIdle(store, request.campaignId);
   validateRequest(store, request);
 
   const executable = (dependencies.resolveExecutable ?? resolveCodexExecutable)();
+  // Mark before spending credits. If Codex fails to start or exits without an outcome,
+  // listEmailRecoveryCandidates makes these contacts eligible again once the run ends.
+  if (request.kind === "EMAIL_DISCOVERY" && request.contactIds?.length) {
+    store.markEmailRecoveryStarted(request.campaignId, request.contactIds);
+  }
   const run = store.createWorkflowRun({
     campaignId: request.campaignId,
     kind: request.kind,
@@ -224,15 +250,14 @@ export function launchWorkflow(
     try {
       if (code === 0) {
         store.completeWorkflowRun(run.id);
-        const next = nextWorkflowRequest(store, request);
-        if (next) {
-          try {
-            const following = launchWorkflow(db, next, dependencies);
-            store.appendWorkflowOutput(run.id, `\nAutomatically started ${next.kind} (run ${following.id}).\n`);
-          } catch (error) {
-            store.appendWorkflowOutput(run.id,
-              `\nAutomatic continuation could not start: ${error instanceof Error ? error.message : String(error)}\n`);
-          }
+        // Free pipeline: email discovery → SMTP guess check → prospect research.
+        // Treg recovery is never automatic; it needs the separate dashboard button.
+        if (request.kind === "EMAIL_DISCOVERY" && !request.contactIds?.length) {
+          startGuessCheck(db, request.campaignId, { continueToResearch: true, dependencies })
+            .then((message) => store.appendWorkflowOutput(run.id, `\n${message}\n`))
+            .catch((error) => store.appendWorkflowOutput(run.id,
+              `\nSMTP guess check could not run: ${error instanceof Error ? error.message : String(error)}\n`))
+            .catch(() => undefined);
         }
       }
       else {
@@ -242,4 +267,74 @@ export function launchWorkflow(
   });
 
   return store.getWorkflowRun(run.id)!;
+}
+
+const guessChecks = new Set<number>();
+const lastGuessChecks = new Map<number, string>();
+
+/** True while an in-process SMTP guess check runs for the campaign. */
+export function isCheckingGuesses(campaignId: number): boolean {
+  return guessChecks.has(campaignId);
+}
+
+export function lastGuessCheck(campaignId: number): string | undefined {
+  return lastGuessChecks.get(campaignId);
+}
+
+function assertCampaignIdle(store: OutboundStore, campaignId: number): void {
+  if (guessChecks.has(campaignId)
+    || store.listWorkflowRuns(campaignId).some(({ status }) => status === "RUNNING" || status === "PENDING")) {
+    throw new WorkflowError("Wait for the active workflow or SMTP check in this campaign to finish");
+  }
+}
+
+/**
+ * SMTP-checks the campaign's pending guesses in-process (free, no Codex). With
+ * continueToResearch, it then starts prospect research for eligible contacts. Guards run
+ * synchronously so callers get an immediate error; the returned promise resolves to a summary.
+ */
+export function startGuessCheck(
+  db: SqliteDatabase, campaignId: number,
+  options: { continueToResearch?: boolean; dependencies?: RunnerDependencies } = {},
+): Promise<string> {
+  const store = new OutboundStore(db);
+  assertCampaignIdle(store, campaignId);
+  guessChecks.add(campaignId);
+  const verifier = options.dependencies?.verifier ?? new SmtpVerifier();
+  return verifyGuessedEmails(store, campaignId, verifier)
+    .then((summary) => {
+      let message = `SMTP guess check: ${formatSummary(summary)}.`;
+      const recoverable = store.listEmailRecoveryCandidates(campaignId).length;
+      if (recoverable) message += ` ${recoverable} contact(s) can be recovered with Treg.`;
+      guessChecks.delete(campaignId);
+      if (options.continueToResearch && store.listResearchEligibleProspects(campaignId)
+        .some(({ id }) => !store.getProspectResearch(id))) {
+        try {
+          const run = launchWorkflow(db, { campaignId, kind: "PROSPECT_RESEARCH" }, options.dependencies);
+          message += ` Automatically started PROSPECT_RESEARCH (run ${run.id}).`;
+        } catch (error) {
+          message += ` Prospect research could not start: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
+      lastGuessChecks.set(campaignId, message);
+      return message;
+    })
+    .catch((error: unknown) => {
+      const message = `SMTP guess check failed: ${error instanceof Error ? error.message : String(error)}`;
+      lastGuessChecks.set(campaignId, message);
+      return message;
+    })
+    .finally(() => guessChecks.delete(campaignId));
+}
+
+/**
+ * Starts the paid, targeted Treg recovery for every recoverable guess in the campaign.
+ * Only an explicit human action (dashboard button or CLI) calls this.
+ */
+export function launchEmailRecovery(
+  db: SqliteDatabase, campaignId: number, dependencies: RunnerDependencies = {},
+): WorkflowRun {
+  const contactIds = new OutboundStore(db).listEmailRecoveryCandidates(campaignId).map(({ id }) => id);
+  if (contactIds.length === 0) throw new WorkflowError("No contacts need Treg recovery");
+  return launchWorkflow(db, { campaignId, kind: "EMAIL_DISCOVERY", contactIds }, dependencies);
 }

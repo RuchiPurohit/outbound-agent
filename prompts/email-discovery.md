@@ -1,9 +1,19 @@
 # Email Discovery Runbook
 
 Use this runbook only after the user has approved contacts. This phase discovers
-professional business email addresses through Treg or credible public sources
-and, when none is found, records one clearly separated best-effort
-company-domain guess. It does not draft or send email.
+professional business email addresses through credible public sources and, when
+none is found, records one clearly separated best-effort company-domain guess.
+It does not draft or send email.
+
+The full email pipeline is:
+
+1. **Discovery (this runbook, Codex):** public sources only, then a pattern
+   guess. Never call Treg here.
+2. **SMTP check (deterministic, free):** runs automatically after dashboard
+   discovery. It probes the guess, then the other patterns below, and keeps the
+   first address the mail server accepts.
+3. **Treg recovery (paid, human-triggered):** only for guesses whose SMTP result
+   was `INVALID`, `CATCH_ALL`, or `UNKNOWN`. See "Post-SMTP Treg recovery".
 
 ## Inputs and campaign selection
 
@@ -18,6 +28,8 @@ company-domain guess. It does not draft or send email.
    `EMAIL_NOT_FOUND` result when it has no stored guess, but only to add the
    optional guess; do not relabel it or repeat public discovery unless the user
    explicitly requests a fresh check.
+   A targeted post-SMTP recovery is that explicit fresh check; follow
+   "Post-SMTP Treg recovery" below instead of the discovery rules.
 7. If no eligible contacts exist, stop without researching.
 
 ## Allowed outcomes
@@ -38,22 +50,7 @@ Record exactly one outcome for every eligible contact:
 
 ## Discovery rules
 
-- Use Treg first. Search the catalog for the current email-finding and
-  verification routes, inspect their parameters and prices, then use the routed
-  `treg.people.email.find` and `treg.people.email.verify` capabilities unless a
-  more specific contract is required. Set a reasonable route cost ceiling for
-  each contact and record the actual call IDs and costs.
-- Send the strongest supported identity available: prefer the approved contact's
-  sourced LinkedIn URL; otherwise use the verified public name and canonical
-  company domain. A deliverable mailbox is not by itself proof that it belongs
-  to the intended person, so do not persist a result when the returned identity
-  conflicts with the approved contact.
-- A Treg-discovered address qualifies as `VERIFIED` only when the verifier's
-  exact verdict is `valid`. Store the finder and verifier call IDs, serving
-  providers, identity inputs, verdict, and costs in the research notes. Use the
-  verifier call audit URL as the evidence URL.
-- Treg discovery does not make an address `PUBLICLY_LISTED`. Use that status only
-  when a credible public page displays the exact address.
+- Do not call Treg during discovery. Use credible public sources only.
 - Search only for professional business email addresses belonging to the
   approved contact.
 - Prefer employer-controlled pages, public professional profiles, conference
@@ -90,7 +87,8 @@ Only after persisting `EMAIL_NOT_FOUND`, record at most one guessed address with
    selected conventional pattern. Use `AMBIGUOUS` when compound names,
    transliteration, suffixes, collisions, or another uncertainty affects it.
 5. Normalize the local part to lowercase ASCII and explain the choice in
-   `basis`. Do not probe, send to, or claim deliverability for the mailbox.
+   `basis`. Do not probe, send to, or claim deliverability for the mailbox
+   yourself; the deterministic SMTP check handles probing after this run.
 
 Skip guessing when the company domain or the contact's name cannot support a
 responsible candidate. A domain or MX check does not prove that a mailbox exists.
@@ -118,6 +116,40 @@ For `EMAIL_NOT_FOUND`:
 Use `recordEmailDiscovery` for the discovery outcome and `recordEmailGuess` for
 the separate optional hint so approval, source, domain, and status constraints
 are enforced.
+
+## Post-SMTP Treg recovery
+
+Run only when the request supplies contact IDs (dashboard "Recover with Treg" or
+`emails:recover`). Process exactly those contacts; each has an `EMAIL_NOT_FOUND`
+pattern guess whose SMTP result was `INVALID`, `CATCH_ALL`, or `UNKNOWN`.
+
+- Before the first finder call, check the Treg balance if the catalog exposes
+  one. Search the catalog for the current email-finding and verification
+  routes, inspect parameters and prices, then use the routed
+  `treg.people.email.find` and `treg.people.email.verify` capabilities. Set a
+  reasonable cost ceiling per contact.
+- Send the strongest supported identity: prefer the approved contact's sourced
+  LinkedIn URL; otherwise the verified public name and canonical company domain.
+  A deliverable mailbox does not prove it belongs to the intended person, so a
+  result whose identity conflicts with the approved contact is `NOT_FOUND`.
+- Do not submit or preserve the failed guess as a discovered result.
+- Record exactly one outcome per contact with `recordEmailRecovery({contactId,
+  outcome, email, sourceUrl, notes})`. Never call `recordEmailDiscovery` or
+  `recordEmailGuess` during recovery.
+  - `VERIFIED`: the verifier's exact verdict is `valid` and the identity
+    matches. This stores the address as `VERIFIED`.
+  - `CATCH_ALL_CANDIDATE`: an identity-matched finder address on the company
+    domain whose verifier verdict is exactly `catch_all`. It replaces the
+    pattern guess and stays an unverified guess.
+  - `NOT_FOUND`: every other completed result (`risky`, `unknown`, `invalid`,
+    unchecked, identity mismatch, or no finder result). The guess is kept.
+  - `PROVIDER_ERROR`: a Treg call failed because of credits, billing, quota,
+    rate limits, or an outage. Stop calling Treg and record this for that
+    contact and every remaining contact; they are retried later.
+- `notes` must contain the finder and verifier call IDs, serving providers,
+  identity inputs, verdict, and actual costs (or the provider error).
+  `sourceUrl` is the verifier call audit URL.
+- Treg discovery never makes an address `PUBLICLY_LISTED`.
 
 ## Prohibited work
 

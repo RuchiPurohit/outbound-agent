@@ -1,5 +1,6 @@
 import { FOLLOW_UP_DELAY_DAYS, followUpDueAt, formatDueAt, type OutboundStore } from "../db/store.js";
 import type { Outreach } from "../db/types.js";
+import { guessVerificationBadge } from "./emailResults.js";
 
 const escapeHtml = (value: unknown): string => String(value ?? "")
   .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -81,7 +82,9 @@ export function renderOutreachReview(store: OutboundStore, campaignId: number, d
     && draft.approvedSubject === draft.subject && draft.approvedBody === draft.body && canApprove;
   const guessedWarning = recipient?.guessed
     ? `<div class="notice error"><strong>Guessed recipient:</strong> ${escapeHtml(recipient.address)} is unverified. Approval and final send confirmation accept the risk of a bounce or wrong mailbox.</div>`
-    : "";
+    : contact.guessedEmailVerification === "INVALID"
+      ? `<div class="notice error"><strong>Guessed recipient rejected:</strong> ${escapeHtml(contact.guessedEmail)} was rejected by the recipient's mail server, so this email cannot be approved or sent.</div>`
+      : "";
   const sendControls = draft.status === "READY_TO_SEND"
     ? blocked
       ? `<div class="notice">Delivery ${delivery.status.toLowerCase()}. ${escapeHtml(delivery.error ?? "Wait for Gmail confirmation. Sending again is blocked.")}</div>`
@@ -93,5 +96,5 @@ export function renderOutreachReview(store: OutboundStore, campaignId: number, d
         : '<div class="notice">This email needs fresh approval before sending because its recipient or content was not captured by the original approval.</div>'}<form method="post" action="/campaigns/${campaignId}/outreach/${draft.id}/restore" style="margin-top:12px"><button class="secondary" ${active ? "disabled" : ""}>Return to draft for review</button></form>`
     : delivery?.status === "SENT"
       ? `<p class="muted">Sent from ${escapeHtml(delivery.fromEmail)} via ${escapeHtml(delivery.provider)} · ${escapeHtml(delivery.finishedAt)}<br>Provider message: ${escapeHtml(delivery.gmailMessageId)} · Thread: ${escapeHtml(delivery.gmailThreadId)}</p>` : "";
-  return `<p><strong>To:</strong> ${escapeHtml(delivery?.toEmail ?? draft.approvedRecipient ?? recipient?.address ?? "No email")}${recipient?.guessed ? ' <span class="badge UNKNOWN">Guessed</span>' : ""} · ${escapeHtml(contact.title)}</p>${guessedWarning}${draftContent}${signal ? `<p class="muted"><strong>Cited signal:</strong> ${escapeHtml(signal.signal)} <a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noreferrer">Source ↗</a></p>` : '<div class="notice error">This legacy draft has no linked prospect signal and cannot be approved. Reject it or complete research and request a rewrite.</div>'}${reviewControls}${sendControls}`;
+  return `<p><strong>To:</strong> ${escapeHtml(delivery?.toEmail ?? draft.approvedRecipient ?? recipient?.address ?? "No email")}${recipient?.guessed ? ` <span class="badge UNKNOWN">Guessed</span> ${guessVerificationBadge(recipient.verification, contact.guessedEmailVerificationDetail)}` : ""} · ${escapeHtml(contact.title)}</p>${guessedWarning}${draftContent}${signal ? `<p class="muted"><strong>Cited signal:</strong> ${escapeHtml(signal.signal)} <a href="${escapeHtml(signal.sourceUrl)}" target="_blank" rel="noreferrer">Source ↗</a></p>` : '<div class="notice error">This legacy draft has no linked prospect signal and cannot be approved. Reject it or complete research and request a rewrite.</div>'}${reviewControls}${sendControls}`;
 }

@@ -2,7 +2,7 @@ import type { SqliteDatabase } from "./database.js";
 import { randomUUID } from "node:crypto";
 import type {
   Campaign, CampaignStatus, ChatFeatureStatus, ChatImplementation, Company, CompanyScoreBreakdown,
-  Contact, EmailGuessConfidence, EmailGuessPattern, EmailStatus, Outreach, ResearchRecord,
+  Contact, EmailGuessConfidence, EmailGuessPattern, EmailRecoveryOutcome, EmailStatus, GuessVerification, Outreach, ResearchRecord,
   ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch, EmailDelivery,
 } from "./types.js";
 
@@ -72,6 +72,13 @@ function checkedGuessedEmail(value: string, companyDomain: string): string {
 }
 
 export class WorkflowError extends Error {}
+
+export interface ContactRecipient {
+  address: string;
+  guessed: boolean;
+  /** SMTP verdict for a guessed address; null when sourced or not yet checked. */
+  verification: GuessVerification | null;
+}
 
 export class OutboundStore {
   public constructor(private readonly db: SqliteDatabase) {}
@@ -345,11 +352,15 @@ export class OutboundStore {
       if (!found && input.email) {
         throw new WorkflowError("EMAIL_NOT_FOUND cannot include an email address");
       }
+      // Re-recording EMAIL_NOT_FOUND changes nothing; keep the guess and its SMTP/recovery evidence.
+      if (!found && contact.emailStatus === "EMAIL_NOT_FOUND") return contact;
 
       this.db.prepare(`UPDATE contacts SET email = ?, email_status = ?,
         guessed_email = NULL, guessed_email_pattern = NULL,
         guessed_email_confidence = NULL, guessed_email_basis = NULL,
-        guessed_email_source_url = NULL WHERE id = ?`)
+        guessed_email_source_url = NULL, guessed_email_verification = NULL,
+        guessed_email_verification_detail = NULL, guessed_email_verified_at = NULL,
+        guessed_email_source = NULL WHERE id = ?`)
         .run(found ? input.email : null, input.emailStatus, input.contactId);
 
       if (found) {
@@ -393,11 +404,145 @@ export class OutboundStore {
       throw new WorkflowError("A pattern source URL is only valid for PATTERN_SUPPORTED guesses");
     }
     this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_pattern = ?,
-      guessed_email_confidence = ?, guessed_email_basis = ?, guessed_email_source_url = ?
+      guessed_email_confidence = ?, guessed_email_basis = ?, guessed_email_source_url = ?,
+      guessed_email_verification = NULL, guessed_email_verification_detail = NULL,
+      guessed_email_verified_at = NULL, guessed_email_source = 'PATTERN'
       WHERE id = ?`).run(
       guessedEmail, input.pattern, input.confidence, basis, sourceUrl, input.contactId,
     );
     return this.getContact(input.contactId)!;
+  }
+
+  /** Approved guesses in the campaign that have no conclusive SMTP verdict yet. */
+  listGuessesAwaitingVerification(campaignId: number): Contact[] {
+    return this.listCompanies({ campaignId, status: "APPROVED" })
+      .flatMap(({ id }) => this.listContacts(id))
+      .filter((contact) => contact.status === "APPROVED" && contact.emailStatus === "EMAIL_NOT_FOUND"
+        && !contact.email && !!contact.guessedEmail
+        && (contact.guessedEmailVerification === null || contact.guessedEmailVerification === "UNKNOWN"));
+  }
+
+  /**
+   * Stores an SMTP verdict on a guess. It annotates the guess only: the contact stays
+   * EMAIL_NOT_FOUND and the address never moves into contacts.email.
+   */
+  recordGuessVerification(input: {
+    contactId: number;
+    guessedEmail: string;
+    verdict: GuessVerification;
+    detail: string;
+    /** Another pattern the mail server accepted after rejecting the stored guess. */
+    replacement?: { email: string; pattern: EmailGuessPattern };
+  }): Contact {
+    return this.db.transaction(() => {
+      const contact = this.requireContact(input.contactId);
+      if (contact.emailStatus !== "EMAIL_NOT_FOUND" || contact.email || !contact.guessedEmail) {
+        throw new WorkflowError("Only guessed emails for EMAIL_NOT_FOUND contacts can be SMTP-verified");
+      }
+      if (contact.guessedEmail.toLowerCase() !== input.guessedEmail.toLowerCase()) {
+        throw new WorkflowError("The guessed email changed during verification; verify it again");
+      }
+      if (input.replacement) {
+        if (contact.guessedEmailSource !== "PATTERN") {
+          throw new WorkflowError("Only pattern guesses can be replaced by another SMTP-checked pattern");
+        }
+        const company = this.requireCompany(contact.companyId);
+        const email = checkedGuessedEmail(input.replacement.email, company.domain);
+        const basis = `SMTP check accepted the ${input.replacement.pattern} pattern after rejecting the stored guess `
+          + `${contact.guessedEmail} (${contact.guessedEmailPattern}). Earlier basis: ${contact.guessedEmailBasis}`;
+        this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_pattern = ?,
+          guessed_email_confidence = 'COMMON_PATTERN', guessed_email_basis = ?, guessed_email_source_url = NULL
+          WHERE id = ?`).run(email, input.replacement.pattern, basis, contact.id);
+      }
+      this.db.prepare(`UPDATE contacts SET guessed_email_verification = ?,
+        guessed_email_verification_detail = ?, guessed_email_verified_at = ? WHERE id = ?`)
+        .run(input.verdict, input.detail.slice(0, 1000), now(), input.contactId);
+      return this.getContact(input.contactId)!;
+    })();
+  }
+
+  /**
+   * Pattern guesses whose SMTP check was invalid, catch-all, or inconclusive and that have no
+   * recorded Treg outcome. Contacts with a VERIFIED, CATCH_ALL_CANDIDATE, or NOT_FOUND outcome
+   * are never recovered again. A contact whose recovery hit a provider error, or whose run
+   * ended without recording an outcome, is eligible again once no workflow is active.
+   */
+  listEmailRecoveryCandidates(campaignId: number): Contact[] {
+    const active = this.listWorkflowRuns(campaignId)
+      .some(({ status }) => status === "RUNNING" || status === "PENDING");
+    return this.listCompanies({ campaignId, status: "APPROVED" })
+      .flatMap(({ id }) => this.listContacts(id))
+      .filter((contact) => contact.status === "APPROVED" && contact.emailStatus === "EMAIL_NOT_FOUND"
+        && !contact.email && !!contact.guessedEmail && contact.guessedEmailSource === "PATTERN"
+        && contact.emailRecoveryOutcome === null && (contact.emailRecoveryStartedAt === null || !active)
+        && ["INVALID", "CATCH_ALL", "UNKNOWN"].includes(contact.guessedEmailVerification ?? ""));
+  }
+
+  /** Marks contacts as handed to Treg recovery before the workflow spends any credits. */
+  markEmailRecoveryStarted(campaignId: number, contactIds: number[]): void {
+    this.db.transaction(() => {
+      const allowed = new Set(this.listEmailRecoveryCandidates(campaignId).map(({ id }) => id));
+      for (const id of contactIds) {
+        if (!allowed.has(id)) throw new WorkflowError(`Contact ${id} is not awaiting Treg recovery`);
+        this.db.prepare(`UPDATE contacts SET email_recovery_started_at = ?, email_recovery_outcome = NULL,
+          email_recovery_notes = NULL, email_recovery_error = NULL WHERE id = ?`).run(now(), id);
+      }
+    })();
+  }
+
+  /**
+   * Records the Treg recovery outcome for a contact handed to recovery.
+   * VERIFIED requires an exact Treg `valid` verdict and promotes the address.
+   * CATCH_ALL_CANDIDATE replaces the pattern guess with Treg's found address, still as an
+   * unverified guess. NOT_FOUND keeps the existing guess and its SMTP evidence.
+   * PROVIDER_ERROR (credits, quota, outage) keeps the guess and requeues the contact.
+   */
+  recordEmailRecovery(input: {
+    contactId: number;
+    outcome: EmailRecoveryOutcome | "PROVIDER_ERROR";
+    email?: string;
+    sourceUrl?: string;
+    notes: string;
+  }): Contact {
+    return this.db.transaction(() => {
+      const contact = this.requireContact(input.contactId);
+      if (contact.status !== "APPROVED" || contact.emailStatus !== "EMAIL_NOT_FOUND"
+        || !contact.emailRecoveryStartedAt || contact.emailRecoveryOutcome !== null) {
+        throw new WorkflowError("Only approved EMAIL_NOT_FOUND contacts with a pending Treg recovery can record an outcome");
+      }
+      const notes = input.notes.trim();
+      if (!notes) throw new WorkflowError("Treg recovery requires provenance notes (call IDs, providers, verdict, cost)");
+      if (input.outcome === "PROVIDER_ERROR") {
+        if (input.email) throw new WorkflowError("PROVIDER_ERROR recovery cannot include an email address");
+        this.db.prepare(`UPDATE contacts SET email_recovery_started_at = NULL, email_recovery_error = ?
+          WHERE id = ?`).run(notes.slice(0, 1000), contact.id);
+        return this.getContact(contact.id)!;
+      }
+      if (input.outcome === "NOT_FOUND") {
+        if (input.email) throw new WorkflowError("NOT_FOUND recovery cannot include an email address");
+      } else {
+        if (!input.email || !input.sourceUrl) {
+          throw new WorkflowError("A Treg recovery result requires the exact address and the verifier audit URL");
+        }
+        checkPublicUrl(input.sourceUrl, "Treg verifier audit");
+      }
+      if (input.outcome === "VERIFIED") {
+        this.recordEmailDiscovery({ contactId: contact.id, emailStatus: "VERIFIED",
+          email: input.email, sourceUrl: input.sourceUrl, notes });
+      } else if (input.outcome === "CATCH_ALL_CANDIDATE") {
+        const company = this.requireCompany(contact.companyId);
+        const guessedEmail = checkedGuessedEmail(input.email!, company.domain);
+        this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_source = 'TREG_CATCH_ALL',
+          guessed_email_pattern = NULL, guessed_email_confidence = NULL, guessed_email_basis = ?,
+          guessed_email_source_url = ?, guessed_email_verification = 'CATCH_ALL',
+          guessed_email_verification_detail = 'Treg verifier returned catch_all; the mailbox cannot be confirmed',
+          guessed_email_verified_at = ? WHERE id = ?`)
+          .run(guessedEmail, notes, input.sourceUrl, now(), contact.id);
+      }
+      this.db.prepare(`UPDATE contacts SET email_recovery_outcome = ?, email_recovery_notes = ?,
+        email_recovery_error = NULL WHERE id = ?`).run(input.outcome, notes.slice(0, 4000), contact.id);
+      return this.getContact(contact.id)!;
+    })();
   }
 
   reviewContact(id: number, decision: Exclude<ReviewStatus, "DISCOVERED">): Contact {
@@ -481,7 +626,7 @@ export class OutboundStore {
     return this.listEligibleProspects(campaignId);
   }
 
-  getContactRecipient(contactId: number): { address: string; guessed: boolean } | undefined {
+  getContactRecipient(contactId: number): ContactRecipient | undefined {
     return this.recipientFor(this.requireContact(contactId));
   }
 
@@ -885,18 +1030,24 @@ export class OutboundStore {
     return this.requireProspectEligible(contactId);
   }
 
-  private recipientFor(contact: Contact): { address: string; guessed: boolean } | undefined {
+  private recipientFor(contact: Contact): ContactRecipient | undefined {
     if (contact.email && ["PUBLICLY_LISTED", "VERIFIED"].includes(contact.emailStatus)) {
-      return { address: contact.email, guessed: false };
+      return { address: contact.email, guessed: false, verification: null };
     }
-    if (contact.emailStatus === "EMAIL_NOT_FOUND" && contact.guessedEmail) {
-      return { address: contact.guessedEmail, guessed: true };
+    // A mailbox the recipient's server rejected would only bounce, so it is not a recipient.
+    if (contact.emailStatus === "EMAIL_NOT_FOUND" && contact.guessedEmail
+      && contact.guessedEmailVerification !== "INVALID") {
+      return { address: contact.guessedEmail, guessed: true, verification: contact.guessedEmailVerification };
     }
     return undefined;
   }
 
-  private requireContactRecipient(contactId: number): { address: string; guessed: boolean } {
-    const recipient = this.getContactRecipient(contactId);
+  private requireContactRecipient(contactId: number): ContactRecipient {
+    const contact = this.requireContact(contactId);
+    const recipient = this.recipientFor(contact);
+    if (!recipient && contact.guessedEmailVerification === "INVALID") {
+      throw new WorkflowError("The guessed email was rejected by the recipient's mail server (SMTP invalid)");
+    }
     if (!recipient) {
       throw new WorkflowError("Prospect workflow requires a sourced or explicitly guessed business email");
     }
@@ -989,6 +1140,14 @@ function contactFromRow(row: Row): Contact {
     guessedEmailConfidence: nullableText(row, "guessed_email_confidence") as Contact["guessedEmailConfidence"],
     guessedEmailBasis: nullableText(row, "guessed_email_basis"),
     guessedEmailSourceUrl: nullableText(row, "guessed_email_source_url"),
+    guessedEmailVerification: nullableText(row, "guessed_email_verification") as Contact["guessedEmailVerification"],
+    guessedEmailVerificationDetail: nullableText(row, "guessed_email_verification_detail"),
+    guessedEmailVerifiedAt: nullableText(row, "guessed_email_verified_at"),
+    guessedEmailSource: nullableText(row, "guessed_email_source") as Contact["guessedEmailSource"],
+    emailRecoveryStartedAt: nullableText(row, "email_recovery_started_at"),
+    emailRecoveryOutcome: nullableText(row, "email_recovery_outcome") as Contact["emailRecoveryOutcome"],
+    emailRecoveryNotes: nullableText(row, "email_recovery_notes"),
+    emailRecoveryError: nullableText(row, "email_recovery_error"),
     status: text(row, "status") as Contact["status"] };
 }
 function researchFromRow(row: Row): ResearchRecord {

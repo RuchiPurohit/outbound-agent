@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import { openDatabase } from "../src/db/database.js";
 import { OutboundStore } from "../src/db/store.js";
 import { renderProspectStages } from "../src/web/prospectStages.js";
-import { buildPrompt, launchWorkflow, nextWorkflowRequest, validateRequest } from "../src/workflows/runner.js";
+import { buildPrompt, launchWorkflow, validateRequest } from "../src/workflows/runner.js";
 
 function fixture() {
   const db = openDatabase(":memory:");
@@ -56,6 +56,29 @@ describe("Prospect workflow", () => {
     } finally { db.close(); }
   });
 
+  it("allows targeted Treg recovery only for unsuccessful SMTP guesses", () => {
+    const { db, store, campaign, contact } = fixture();
+    try {
+      store.recordEmailDiscovery({ contactId: contact.id, emailStatus: "EMAIL_NOT_FOUND" });
+      store.recordEmailGuess({ contactId: contact.id, guessedEmail: "pat@example.com",
+        pattern: "firstname", confidence: "COMMON_PATTERN", basis: "Common pattern" });
+      store.recordGuessVerification({ contactId: contact.id, guessedEmail: "pat@example.com",
+        verdict: "CATCH_ALL", detail: "accepts all recipients" });
+      assert.doesNotThrow(() => validateRequest(store, {
+        campaignId: campaign.id, kind: "EMAIL_DISCOVERY", contactIds: [contact.id],
+      }));
+      const prompt = buildPrompt({ campaignId: campaign.id, kind: "EMAIL_DISCOVERY", contactIds: [contact.id] });
+      assert.match(prompt, /post-SMTP Treg email recovery/);
+      assert.match(prompt, new RegExp(`ONLY these contact IDs: \\[${contact.id}\\]`));
+      assert.match(prompt, /returns exactly valid/);
+      store.recordGuessVerification({ contactId: contact.id, guessedEmail: "pat@example.com",
+        verdict: "VALID", detail: "accepted" });
+      assert.throws(() => validateRequest(store, {
+        campaignId: campaign.id, kind: "EMAIL_DISCOVERY", contactIds: [contact.id],
+      }), /invalid, catch-all, or inconclusive/);
+    } finally { db.close(); }
+  });
+
   it("distinguishes research prerequisites, ready prospects, and research in progress", () => {
     const { db, store, campaign, email } = fixture();
     try {
@@ -99,7 +122,6 @@ describe("Prospect workflow", () => {
       });
       await waitForRuns(store, 2);
       assert.equal(store.listOutreach(contact.id).length, 0);
-      assert.equal(nextWorkflowRequest(store, { campaignId: campaign.id, kind: "PROSPECT_RESEARCH" }), undefined);
       launchWorkflow(db, { campaignId: campaign.id, kind: "EMAIL_GENERATION", contactIds: [contact.id] }, {
         resolveExecutable: () => "simulated-codex", spawnProcess: fakeSpawn,
       });
@@ -110,7 +132,6 @@ describe("Prospect workflow", () => {
       assert.equal(store.listOutreach(contact.id)[0]?.reviewedAt, null);
       assert.equal(store.listOutreach(contact.id)[0]?.sentAt, null);
       assert.equal(prompts.length, 3);
-      assert.equal(nextWorkflowRequest(store, { campaignId: campaign.id, kind: "EMAIL_GENERATION" }), undefined);
     } finally { db.close(); }
   });
 
@@ -126,7 +147,6 @@ describe("Prospect workflow", () => {
       assert.equal(store.listWorkflowRuns()[0]?.status, "FAILED");
       assert.equal(store.listOutreach(contact.id).length, 0);
       store.saveProspectResearch({ contactId: contact.id, signals: [], notes: "No useful signal" });
-      assert.equal(nextWorkflowRequest(store, { campaignId: campaign.id, kind: "PROSPECT_RESEARCH" }), undefined);
       assert.throws(() => validateRequest(store, { campaignId: campaign.id, kind: "EMAIL_GENERATION",
         contactIds: [contact.id] }), /Every selected prospect/);
       assert.match(renderProspectStages(store, campaign.id), /No credible angle/);
@@ -284,8 +304,11 @@ describe("Prospect workflow", () => {
     assert.match(generation, /first-party sources/);
     assert.match(generation, /one first-touch draft, not follow-ups/);
     const emailDiscovery = buildPrompt({ campaignId: 2, kind: "EMAIL_DISCOVERY" });
-    assert.match(emailDiscovery, /Use Treg first for email finding and deliverability verification/);
-    assert.match(emailDiscovery, /cost, provenance, identity-match, and verdict rules/);
+    assert.match(emailDiscovery, /Do not use Treg in this run/);
+    assert.doesNotMatch(emailDiscovery, /Use Treg first/);
+    const recovery = buildPrompt({ campaignId: 2, kind: "EMAIL_DISCOVERY", contactIds: [7] });
+    assert.match(recovery, /call IDs, providers, identity inputs, verdict, and actual costs/);
+    assert.match(recovery, /identity matches the approved contact/);
     assert.match(generation, /at least MEDIUM fit/);
     assert.match(generation, /docs\/PRODUCT.md/);
     const companyDiscovery = buildPrompt({ campaignId: 2, kind: "COMPANY_DISCOVERY", targetCount: 5 });
