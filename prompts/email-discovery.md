@@ -76,6 +76,16 @@ Only after persisting `EMAIL_NOT_FOUND`, record at most one guessed address with
 2. Prefer a pattern demonstrated by another exact, publicly listed employee
    address on the same company domain. Save its public URL and use confidence
    `PATTERN_SUPPORTED`; this label still does not verify the guessed mailbox.
+   Before falling back to a common pattern, search these free sources for any
+   person's exact address on the domain (once per domain):
+   - public GitHub commits by the company's org or its founders/engineers
+     (commit author emails, e.g. a commit's `.patch` view);
+   - the company site's team, about, contact, imprint/Impressum, privacy, and
+     press pages;
+   - press releases, podcast show notes, conference speaker pages, job posts,
+     and app-store or package-registry listings that name a person.
+   Generic role addresses (`hello@`, `info@`, `support@`, `careers@`,
+   `press@`) do not demonstrate a personal pattern.
 3. When no company pattern is publicly demonstrated, consider these patterns in
    order and store only the best candidate:
    - `firstname@company.com` (`firstname`)
@@ -116,6 +126,26 @@ For `EMAIL_NOT_FOUND`:
 Use `recordEmailDiscovery` for the discovery outcome and `recordEmailGuess` for
 the separate optional hint so approval, source, domain, and status constraints
 are enforced.
+
+## Pattern evidence for existing guesses
+
+Run only when the request supplies contact IDs with the `PATTERN_EVIDENCE`
+task (dashboard "Find pattern evidence"). Each contact has an `EMAIL_NOT_FOUND`
+pattern guess whose SMTP result was `CATCH_ALL`, `INVALID`, or `UNKNOWN`, so the
+mail server could not confirm it. This search is free; never call Treg.
+
+- Group contacts by company domain and search each domain once, using the free
+  sources listed in step 2 of the guessing strategy.
+- When an exact personal address on the same domain is found, derive its
+  pattern and call `recordEmailGuess` for every affected contact with that
+  pattern, confidence `PATTERN_SUPPORTED`, the page URL as `sourceUrl`, and a
+  `basis` naming the observed address and pattern. This replaces the guess; the
+  dashboard SMTP-checks it again automatically.
+- If the evidence suggests the stored company domain is wrong (for example,
+  staff use another domain), do not guess on the other domain; mention it in the
+  completion report for human review.
+- If nothing is found for a domain, leave its guesses unchanged. Do not call
+  `recordEmailDiscovery`.
 
 ## Post-SMTP Treg recovery
 

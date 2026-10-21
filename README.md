@@ -101,6 +101,13 @@ Email discovery is a three-step pipeline:
    calls are not rejected; your click on the button is that approval. Normal
    discovery runs keep the default policy, so Treg calls there are refused.
 
+**Find pattern evidence (N)** is a free Codex search, once per contact, for guesses
+SMTP could not confirm. It looks for a real address on the same company domain
+(GitHub commits, team/imprint/press pages, talks, job posts) and stores matches
+as `PATTERN_SUPPORTED` guesses with the source URL; the SMTP check then re-runs.
+Guesses whose `INVALID` result predates multi-pattern checking are counted again
+by **SMTP-check guesses** so every pattern gets tried for free.
+
 Optional `.env` overrides for the SMTP check: `SMTP_VERIFY_HELO` (EHLO name,
 default hostname) and `SMTP_VERIFY_FROM` (envelope sender, default `<>`).
 

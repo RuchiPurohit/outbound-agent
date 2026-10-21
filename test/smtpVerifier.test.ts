@@ -11,7 +11,8 @@ import { verifyGuessedEmails, type MailboxVerifier } from "../src/email/verifyGu
 import type { GuessVerification } from "../src/db/types.js";
 import { renderEmailPipelineStatus, renderEmailResults } from "../src/web/emailResults.js";
 import {
-  buildPrompt, isCheckingGuesses, launchEmailRecovery, launchWorkflow, startGuessCheck, validateRequest,
+  buildPrompt, isCheckingGuesses, launchEmailRecovery, launchPatternEvidence, launchWorkflow, startGuessCheck,
+  validateRequest,
 } from "../src/workflows/runner.js";
 
 /** Fake MX: replies to RCPT TO by looking up the mailbox, or `*` for any other address. */
@@ -458,6 +459,69 @@ describe("Pipeline visibility", () => {
       const silent = renderEmailPipelineStatus(contacts(), store.listWorkflowRuns(campaign.id), { checking: false });
       assert.match(silent, /recorded no outcome for 1 contact/);
       assert.deepEqual(store.listEmailRecoveryCandidates(campaign.id).map(({ id }) => id), [contact.id]);
+    } finally { db.close(); }
+  });
+});
+
+describe("Free follow-ups for unconfirmed guesses", () => {
+  it("re-checks every pattern for INVALID results from older single-guess checks", async () => {
+    const { db, store, campaign, contact } = guessFixture();
+    try {
+      // Simulate a pre-upgrade row: INVALID with no recorded candidate count.
+      db.prepare("UPDATE contacts SET guessed_email_verification = 'INVALID', guessed_email_candidates_checked = NULL WHERE id = ?")
+        .run(contact.id);
+      assert.deepEqual(store.listGuessesAwaitingVerification(campaign.id).map(({ id }) => id), [contact.id]);
+      const probed: string[][] = [];
+      await verifyGuessedEmails(store, campaign.id, fakeVerifier({ "plee@acme.test": "VALID" }, probed));
+      assert.equal(probed[0]!.length, 5);
+      const after = store.getContact(contact.id)!;
+      assert.equal(after.guessedEmail, "plee@acme.test");
+      assert.equal(after.guessedEmailVerification, "VALID");
+      assert.equal(after.guessedEmailCandidatesChecked, 5);
+
+      // A fully checked INVALID result is not probed again.
+      await verifyGuessedEmails(store, campaign.id, fakeVerifier({}));
+      store.recordEmailGuess({ contactId: contact.id, guessedEmail: "pat@acme.test",
+        pattern: "firstname", confidence: "COMMON_PATTERN", basis: "Common pattern" });
+      await verifyGuessedEmails(store, campaign.id, fakeVerifier({}));
+      assert.equal(store.getContact(contact.id)!.guessedEmailCandidatesChecked, 5);
+      assert.equal(store.listGuessesAwaitingVerification(campaign.id).length, 0);
+    } finally { db.close(); }
+  });
+
+  it("runs the free pattern-evidence search once per contact without Treg, then re-checks", async () => {
+    const { db, store, campaign, contact } = guessFixture("CATCH_ALL");
+    try {
+      assert.deepEqual(store.listPatternEvidenceCandidates(campaign.id).map(({ id }) => id), [contact.id]);
+      const prompts: string[][] = [];
+      const run = launchPatternEvidence(db, campaign.id, {
+        verifier: fakeVerifier({ "pat.lee@acme.test": "CATCH_ALL" }),
+        resolveExecutable: () => "simulated-codex",
+        spawnProcess: (_executable, args) => {
+          prompts.push(args);
+          store.recordEmailGuess({ contactId: contact.id, guessedEmail: "pat.lee@acme.test",
+            pattern: "firstname.lastname", confidence: "PATTERN_SUPPORTED",
+            basis: "Observed sam.jones@acme.test on the team page", sourceUrl: "https://acme.test/team" });
+          return noCodex.spawnProcess();
+        },
+      });
+      const args = prompts[0]!;
+      assert.match(args[args.length - 1]!, /public email-pattern evidence/);
+      assert.match(args[args.length - 1]!, /Do not use Treg/);
+      assert.ok(!args.includes('mcp_servers.treg.default_tools_approval_mode="approve"'));
+      assert.equal(store.listPatternEvidenceCandidates(campaign.id).length, 0);
+      assert.throws(() => launchPatternEvidence(db, campaign.id, noCodex), /No guesses need|active workflow/);
+
+      await waitIdle(store, campaign.id);
+      for (let i = 0; i < 100 && store.getContact(contact.id)!.guessedEmailVerification === null; i++) await sleep(10);
+      const after = store.getContact(contact.id)!;
+      assert.equal(after.guessedEmailConfidence, "PATTERN_SUPPORTED");
+      assert.equal(after.guessedEmailVerification, "CATCH_ALL");
+      assert.ok(after.patternEvidenceCheckedAt);
+      assert.match(renderEmailPipelineStatus(store.listContacts(), store.listWorkflowRuns(campaign.id),
+        { checking: false }), new RegExp(`pattern-evidence search</strong> \\(run ${run.id}, completed\\): 1 of 1`));
+      assert.doesNotMatch(renderEmailPipelineStatus(store.listContacts(), store.listWorkflowRuns(campaign.id),
+        { checking: false }), /Last Treg recovery/);
     } finally { db.close(); }
   });
 });

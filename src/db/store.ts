@@ -360,7 +360,7 @@ export class OutboundStore {
         guessed_email_confidence = NULL, guessed_email_basis = NULL,
         guessed_email_source_url = NULL, guessed_email_verification = NULL,
         guessed_email_verification_detail = NULL, guessed_email_verified_at = NULL,
-        guessed_email_source = NULL WHERE id = ?`)
+        guessed_email_source = NULL, guessed_email_candidates_checked = NULL WHERE id = ?`)
         .run(found ? input.email : null, input.emailStatus, input.contactId);
 
       if (found) {
@@ -406,7 +406,8 @@ export class OutboundStore {
     this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_pattern = ?,
       guessed_email_confidence = ?, guessed_email_basis = ?, guessed_email_source_url = ?,
       guessed_email_verification = NULL, guessed_email_verification_detail = NULL,
-      guessed_email_verified_at = NULL, guessed_email_source = 'PATTERN'
+      guessed_email_verified_at = NULL, guessed_email_source = 'PATTERN',
+      guessed_email_candidates_checked = NULL
       WHERE id = ?`).run(
       guessedEmail, input.pattern, input.confidence, basis, sourceUrl, input.contactId,
     );
@@ -420,6 +421,9 @@ export class OutboundStore {
       .filter((contact) => contact.status === "APPROVED" && contact.emailStatus === "EMAIL_NOT_FOUND"
         && !contact.email && !!contact.guessedEmail
         && (contact.guessedEmailVerification === null
+          // INVALID from a single-guess check that predates multi-pattern probing: retry all patterns.
+          || (contact.guessedEmailVerification === "INVALID" && contact.guessedEmailSource === "PATTERN"
+            && contact.guessedEmailCandidatesChecked === null)
           || (options.includeInconclusive === true && contact.guessedEmailVerification === "UNKNOWN")));
   }
 
@@ -434,6 +438,8 @@ export class OutboundStore {
     detail: string;
     /** Another pattern the mail server accepted after rejecting the stored guess. */
     replacement?: { email: string; pattern: EmailGuessPattern };
+    /** How many addresses were offered to the check (stored guess plus alternatives). */
+    candidatesChecked?: number;
   }): Contact {
     return this.db.transaction(() => {
       const contact = this.requireContact(input.contactId);
@@ -456,8 +462,9 @@ export class OutboundStore {
           WHERE id = ?`).run(email, input.replacement.pattern, basis, contact.id);
       }
       this.db.prepare(`UPDATE contacts SET guessed_email_verification = ?,
-        guessed_email_verification_detail = ?, guessed_email_verified_at = ? WHERE id = ?`)
-        .run(input.verdict, input.detail.slice(0, 1000), now(), input.contactId);
+        guessed_email_verification_detail = ?, guessed_email_verified_at = ?,
+        guessed_email_candidates_checked = ? WHERE id = ?`)
+        .run(input.verdict, input.detail.slice(0, 1000), now(), input.candidatesChecked ?? 1, input.contactId);
       return this.getContact(input.contactId)!;
     })();
   }
@@ -477,6 +484,30 @@ export class OutboundStore {
         && !contact.email && !!contact.guessedEmail && contact.guessedEmailSource === "PATTERN"
         && contact.emailRecoveryOutcome === null && (contact.emailRecoveryStartedAt === null || !active)
         && ["INVALID", "CATCH_ALL", "UNKNOWN"].includes(contact.guessedEmailVerification ?? ""));
+  }
+
+  /**
+   * Pattern guesses on domains where SMTP could not confirm the mailbox (catch-all, invalid,
+   * or inconclusive) that lack public pattern evidence and have never been searched for it.
+   */
+  listPatternEvidenceCandidates(campaignId: number): Contact[] {
+    return this.listCompanies({ campaignId, status: "APPROVED" })
+      .flatMap(({ id }) => this.listContacts(id))
+      .filter((contact) => contact.status === "APPROVED" && contact.emailStatus === "EMAIL_NOT_FOUND"
+        && !contact.email && !!contact.guessedEmail && contact.guessedEmailSource === "PATTERN"
+        && contact.guessedEmailConfidence !== "PATTERN_SUPPORTED" && contact.patternEvidenceCheckedAt === null
+        && ["INVALID", "CATCH_ALL", "UNKNOWN"].includes(contact.guessedEmailVerification ?? ""));
+  }
+
+  /** Marks contacts as searched for pattern evidence so the free search runs once per contact. */
+  markPatternEvidenceStarted(campaignId: number, contactIds: number[]): void {
+    this.db.transaction(() => {
+      const allowed = new Set(this.listPatternEvidenceCandidates(campaignId).map(({ id }) => id));
+      for (const id of contactIds) {
+        if (!allowed.has(id)) throw new WorkflowError(`Contact ${id} is not awaiting a pattern-evidence search`);
+        this.db.prepare("UPDATE contacts SET pattern_evidence_checked_at = ? WHERE id = ?").run(now(), id);
+      }
+    })();
   }
 
   /** Marks contacts as handed to Treg recovery before the workflow spends any credits. */
@@ -1149,6 +1180,8 @@ function contactFromRow(row: Row): Contact {
     emailRecoveryOutcome: nullableText(row, "email_recovery_outcome") as Contact["emailRecoveryOutcome"],
     emailRecoveryNotes: nullableText(row, "email_recovery_notes"),
     emailRecoveryError: nullableText(row, "email_recovery_error"),
+    guessedEmailCandidatesChecked: nullableInteger(row, "guessed_email_candidates_checked"),
+    patternEvidenceCheckedAt: nullableText(row, "pattern_evidence_checked_at"),
     status: text(row, "status") as Contact["status"] };
 }
 function researchFromRow(row: Row): ResearchRecord {

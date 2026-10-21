@@ -14,6 +14,8 @@ export interface WorkflowRequest {
   feedback?: string;
   contactIds?: number[];
   outreachIds?: number[];
+  /** Targeted EMAIL_DISCOVERY variant; contactIds without a task means Treg recovery. */
+  emailTask?: "PATTERN_EVIDENCE";
 }
 
 export function buildPrompt(request: WorkflowRequest): string {
@@ -50,7 +52,22 @@ function workflowPrompt(request: WorkflowRequest): string {
         "Complete the workflow; do not merely explain how to do it.",
       ].join(" ");
     case "EMAIL_DISCOVERY":
-      if (request.contactIds?.length) {
+      if (isPatternEvidence(request)) {
+        return [
+          "Read AGENTS.md and prompts/email-discovery.md, especially \"Pattern evidence for existing guesses\".",
+          `Search for public email-pattern evidence for campaign ${request.campaignId}.`,
+          `Process ONLY these contact IDs: ${JSON.stringify(request.contactIds)}.`,
+          "Each has an EMAIL_NOT_FOUND pattern guess whose SMTP result was catch-all, invalid, or inconclusive.",
+          "Do not use Treg. Search free public sources for exact addresses of any person on the same company domain that reveal its pattern.",
+          "Group contacts by company domain and search each domain once.",
+          "When an exact same-domain personal address is found, call recordEmailGuess for each affected contact with the matching pattern, confidence PATTERN_SUPPORTED, the source URL, and a basis naming the observed address and its pattern.",
+          "Generic role addresses (hello@, info@, support@, careers@, press@) do not demonstrate a personal pattern. Never use a personal email domain.",
+          "If no evidence is found for a domain, leave its guesses unchanged; do not call recordEmailDiscovery.",
+          "Do not research other contacts, draft outreach, create Gmail drafts, or send messages.",
+          "Complete the workflow; do not merely explain how to do it.",
+        ].join(" ");
+      }
+      if (isEmailRecovery(request)) {
         return [
           "Read AGENTS.md, docs/ICP.md, and prompts/email-discovery.md.",
           `Run post-SMTP Treg email recovery for campaign ${request.campaignId}.`,
@@ -135,7 +152,13 @@ export function validateRequest(store: OutboundStore, request: WorkflowRequest):
   }
   if (request.kind === "EMAIL_DISCOVERY") {
     const contacts = companies.flatMap(({ id }) => store.listContacts(id));
-    if (request.contactIds?.length) {
+    if (isPatternEvidence(request)) {
+      const allowed = new Set(store.listPatternEvidenceCandidates(request.campaignId).map(({ id }) => id));
+      if (!request.contactIds?.length || new Set(request.contactIds).size !== request.contactIds.length
+        || request.contactIds.some((id) => !Number.isSafeInteger(id) || !allowed.has(id))) {
+        throw new WorkflowError("Every pattern-evidence contact must have an unconfirmed pattern guess in this campaign and no earlier search");
+      }
+    } else if (request.contactIds?.length) {
       if (new Set(request.contactIds).size !== request.contactIds.length) {
         throw new WorkflowError("Post-SMTP recovery contact IDs must be unique");
       }
@@ -211,9 +234,8 @@ export function launchWorkflow(
   const executable = (dependencies.resolveExecutable ?? resolveCodexExecutable)();
   // Mark before spending credits. If Codex fails to start or exits without an outcome,
   // listEmailRecoveryCandidates makes these contacts eligible again once the run ends.
-  if (request.kind === "EMAIL_DISCOVERY" && request.contactIds?.length) {
-    store.markEmailRecoveryStarted(request.campaignId, request.contactIds);
-  }
+  if (isEmailRecovery(request)) store.markEmailRecoveryStarted(request.campaignId, request.contactIds!);
+  if (isPatternEvidence(request)) store.markPatternEvidenceStarted(request.campaignId, request.contactIds!);
   const run = store.createWorkflowRun({
     campaignId: request.campaignId,
     kind: request.kind,
@@ -256,8 +278,10 @@ export function launchWorkflow(
         store.completeWorkflowRun(run.id);
         // Free pipeline: email discovery → SMTP guess check → prospect research.
         // Treg recovery is never automatic; it needs the separate dashboard button.
-        if (request.kind === "EMAIL_DISCOVERY" && !request.contactIds?.length) {
-          startGuessCheck(db, request.campaignId, { continueToResearch: true, dependencies })
+        // Pattern evidence may replace guesses, so it is followed by a free SMTP re-check.
+        const followedByCheck = request.kind === "EMAIL_DISCOVERY" && !isEmailRecovery(request);
+        if (followedByCheck) {
+          startGuessCheck(db, request.campaignId, { continueToResearch: !isPatternEvidence(request), dependencies })
             .then((message) => store.appendWorkflowOutput(run.id, `\n${message}\n`))
             .catch((error) => store.appendWorkflowOutput(run.id,
               `\nSMTP guess check could not run: ${error instanceof Error ? error.message : String(error)}\n`))
@@ -346,5 +370,19 @@ export function launchEmailRecovery(
 
 /** A targeted post-SMTP Treg recovery, as opposed to normal (Treg-free) email discovery. */
 export function isEmailRecovery(request: WorkflowRequest): boolean {
-  return request.kind === "EMAIL_DISCOVERY" && !!request.contactIds?.length;
+  return request.kind === "EMAIL_DISCOVERY" && !!request.contactIds?.length && !request.emailTask;
+}
+
+/** A targeted, free search for public same-domain address evidence for existing guesses. */
+export function isPatternEvidence(request: WorkflowRequest): boolean {
+  return request.kind === "EMAIL_DISCOVERY" && request.emailTask === "PATTERN_EVIDENCE";
+}
+
+/** Starts the free pattern-evidence search for every eligible guess in the campaign. */
+export function launchPatternEvidence(
+  db: SqliteDatabase, campaignId: number, dependencies: RunnerDependencies = {},
+): WorkflowRun {
+  const contactIds = new OutboundStore(db).listPatternEvidenceCandidates(campaignId).map(({ id }) => id);
+  if (contactIds.length === 0) throw new WorkflowError("No guesses need a pattern-evidence search");
+  return launchWorkflow(db, { campaignId, kind: "EMAIL_DISCOVERY", contactIds, emailTask: "PATTERN_EVIDENCE" }, dependencies);
 }

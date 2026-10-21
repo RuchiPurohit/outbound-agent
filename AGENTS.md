@@ -141,6 +141,11 @@ an `INVALID` guess is not a sendable recipient. When another pattern is
 accepted, it replaces the guess, still labelled as a guess. Never SMTP-probe
 sourced `PUBLICLY_LISTED` or `VERIFIED` addresses.
 
+For guesses SMTP could not confirm, the dashboard's Find pattern evidence button
+runs a free, once-per-contact search for a real same-domain address that
+demonstrates the pattern; matches are stored as `PATTERN_SUPPORTED` guesses with
+the source URL and re-checked over SMTP. Generic role addresses do not count.
+
 Treg recovery starts only from the dashboard's Recover with Treg button or
 `emails:recover`, never automatically. It processes only the supplied contact
 IDs, and a contact with a recorded outcome is never recovered twice. Seek a

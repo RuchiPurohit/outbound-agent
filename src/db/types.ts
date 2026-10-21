@@ -82,6 +82,10 @@ export interface Contact {
   emailRecoveryNotes: string | null;
   /** Last Treg provider error (credits, quota, outage); the contact is queued for retry. */
   emailRecoveryError: string | null;
+  /** Addresses offered to the last SMTP check; null for checks that predate multi-pattern probing. */
+  guessedEmailCandidatesChecked: number | null;
+  /** When the one-time public pattern-evidence search was started for this contact. */
+  patternEvidenceCheckedAt: string | null;
   status: ReviewStatus;
 }
 

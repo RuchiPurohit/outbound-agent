@@ -37,9 +37,23 @@ export function renderEmailPipelineStatus(
     parts.push(`<p class="muted"><strong>SMTP check:</strong> ${unchecked ? `${unchecked} not checked yet · ` : "all guesses checked · "}${count("VALID")} valid · ${count("INVALID")} invalid · ${count("CATCH_ALL")} catch-all · ${count("UNKNOWN")} inconclusive${state.lastCheck ? `<br>${escapeHtml(state.lastCheck)}` : ""}</p>`);
   }
 
-  const recoveries = runs.filter(({ kind, details }) => kind === "EMAIL_DISCOVERY"
-    && !!details && (JSON.parse(details) as { contactIds?: number[] }).contactIds?.length);
-  const latest = recoveries[0];
+  type Details = { contactIds?: number[]; emailTask?: string };
+  const targeted = (task: string | undefined) => runs.filter(({ kind, details }) => {
+    if (kind !== "EMAIL_DISCOVERY" || !details) return false;
+    const parsed = JSON.parse(details) as Details;
+    return !!parsed.contactIds?.length && parsed.emailTask === task;
+  });
+  const evidence = targeted("PATTERN_EVIDENCE")[0];
+  if (evidence) {
+    const ids = new Set((JSON.parse(evidence.details!) as Details).contactIds);
+    const supported = contacts.filter(({ id, guessedEmailConfidence }) =>
+      ids.has(id) && guessedEmailConfidence === "PATTERN_SUPPORTED").length;
+    parts.push(evidence.status === "RUNNING" || evidence.status === "PENDING"
+      ? `<div class="notice"><strong>Pattern-evidence search running</strong> (run ${evidence.id}) for ${ids.size} contact(s)… This page refreshes every 3s.</div>`
+      : `<p class="muted"><strong>Last pattern-evidence search</strong> (run ${evidence.id}, ${evidence.status.toLowerCase()}): ${supported} of ${ids.size} guess(es) now backed by a public same-domain address.</p>`);
+  }
+
+  const latest = targeted(undefined)[0];
   if (latest) {
     const ids = new Set((JSON.parse(latest.details!) as { contactIds: number[] }).contactIds);
     const targets = contacts.filter(({ id }) => ids.has(id));

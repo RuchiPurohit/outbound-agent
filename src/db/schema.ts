@@ -442,4 +442,9 @@ export const migrations: readonly string[] = [
   `
     ALTER TABLE contacts ADD COLUMN email_recovery_error TEXT;
   `,
+  `
+    ALTER TABLE contacts ADD COLUMN guessed_email_candidates_checked INTEGER
+      CHECK (guessed_email_candidates_checked IS NULL OR guessed_email_candidates_checked > 0);
+    ALTER TABLE contacts ADD COLUMN pattern_evidence_checked_at TEXT;
+  `,
 ];

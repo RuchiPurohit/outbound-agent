@@ -37,7 +37,7 @@ export async function verifyGuessedEmails(
       const result = await verifier.verifyCandidates([guess, ...alternatives.map(({ email }) => email)]);
       const replacement = alternatives.find(({ email }) => email === result.address);
       store.recordGuessVerification({ contactId: contact.id, guessedEmail: guess,
-        verdict: result.verdict, detail: result.detail, replacement });
+        verdict: result.verdict, detail: result.detail, replacement, candidatesChecked: 1 + alternatives.length });
       summary[result.verdict] += 1;
       if (replacement) summary.replaced += 1;
       onResult?.(contact, result);
