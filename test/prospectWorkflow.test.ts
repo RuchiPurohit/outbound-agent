@@ -178,10 +178,15 @@ describe("Prospect workflow", () => {
       assert.throws(() => validateRequest(store, { campaignId: other.id, kind: "DRAFT_REWRITE",
         outreachId: draft.id, feedback: "Shorter" }), /eligible DRAFT/);
       validateRequest(store, { campaignId: campaign.id, kind: "DRAFT_REWRITE", outreachId: draft.id, feedback: "Shorter" });
+      const pending = renderProspectStages(store, campaign.id);
+      assert.match(pending, new RegExp(`action="/campaigns/${campaign.id}/outreach/approve-all"`));
+      assert.match(pending, new RegExp(`name="ids" value="${draft.id}"`));
+      assert.match(pending, /Approve all drafts → Ready to send \(1\)/);
       store.reviewCompany(company.id, "REJECTED");
       assert.throws(() => store.approveOutreachForSending(draft.id), /currently APPROVED/);
       store.reviewCompany(company.id, "APPROVED");
       store.approveOutreachForSending(draft.id);
+      assert.doesNotMatch(renderProspectStages(store, campaign.id), /approve-all/);
       assert.throws(() => validateRequest(store, { campaignId: campaign.id, kind: "DRAFT_REWRITE",
         outreachId: draft.id, feedback: "Shorter" }), /eligible DRAFT/);
     } finally { db.close(); }

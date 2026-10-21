@@ -147,6 +147,7 @@ function campaignReturn(campaignId: number, action: string): { path: string; par
     return { path: `${path}/follow-ups`, params: { open: sentId }, anchor: `sent-${sentId}` };
   }
   if (draftId) return { path, params: { draftId }, anchor: `email-${draftId}` };
+  if (action === "outreach/approve-all") return { path, params: {}, anchor: "draft-review" };
   if (/^contacts\/\d+\/recheck-angle$/.test(action)) return { path, params: {}, anchor: "prospect-research" };
   if (/^contacts\/\d+\/email$/.test(action)) return { path, params: {}, anchor: "email-discovery" };
   if (action === "workflows/follow-up-generation") return { path: `${path}/follow-ups`, params: {}, anchor: "generate-follow-ups" };
@@ -508,6 +509,24 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }); return;
     }
 
+    if (action === "outreach/approve-all") {
+      if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {
+        throw new WorkflowError("Wait for the active workflow to finish before reviewing drafts");
+      }
+      const ids = form.getAll("ids").map((value) => requirePositiveId(value, "draft ID"));
+      if (ids.length === 0) throw new WorkflowError("No drafts to approve");
+      // Only the first-touch drafts the reviewer saw on the page; newer drafts need their own review.
+      const campaignDrafts = new Set(store.listCampaignOutreach(campaignId)
+        .filter(({ status }) => status === "DRAFT").map(({ id }) => id));
+      let approved = 0;
+      const skipped: string[] = [];
+      for (const id of ids) {
+        if (!campaignDrafts.has(id)) { skipped.push(`#${id}: no longer a draft in this campaign`); continue; }
+        try { store.approveOutreachForSending(id); approved += 1; }
+        catch (error) { skipped.push(`#${id}: ${messageOf(error)}`); }
+      }
+      back({ notice: `${approved} draft(s) approved and READY_TO_SEND. Nothing was sent.${skipped.length ? ` Skipped ${skipped.length}: ${skipped.join("; ")}` : ""}` }); return;
+    }
     const recheck = action.match(/^contacts\/(\d+)\/recheck-angle$/);
     if (recheck) {
       const contact = store.getContact(Number(recheck[1]));
