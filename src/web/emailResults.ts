@@ -86,10 +86,17 @@ function recoveryStatus(contact: Contact): string {
   return `<br><span class="muted"${contact.emailRecoveryNotes ? ` title="${escapeHtml(contact.emailRecoveryNotes)}"` : ""}>${label}</span>`;
 }
 
+/** Inline form for replacing a contact's email with one the user found or verified elsewhere. */
+function manualEmailForm(campaignId: number, contact: Contact): string {
+  const current = contact.email ?? contact.guessedEmail ?? "";
+  return `<details class="manual-email"><summary>Update email</summary><form method="post" action="/campaigns/${campaignId}/contacts/${contact.id}/email"><label><span>Correct email</span><input name="email" type="email" required value="${escapeHtml(current)}"></label><label><span>How you confirmed it</span><select name="emailStatus"><option value="VERIFIED">Verified externally</option><option value="PUBLICLY_LISTED">Publicly listed</option></select></label><label><span>Source URL</span><input name="sourceUrl" type="url" required placeholder="https://…"></label><label><span>Note (optional)</span><input name="note" maxlength="1000" placeholder="e.g. Verified with Hunter"></label><button>Save email</button></form></details>`;
+}
+
 export function renderEmailResults(
-  companies: Company[], contacts: Contact[], research: ResearchRecord[],
+  companies: Company[], contacts: Contact[], research: ResearchRecord[], campaignId?: number,
 ): string {
-  const completed = contacts.filter(({ emailStatus }) => emailStatus !== "UNKNOWN");
+  // With a campaign, every contact is listed so its email can be updated manually.
+  const completed = campaignId === undefined ? contacts.filter(({ emailStatus }) => emailStatus !== "UNKNOWN") : contacts;
   if (completed.length === 0) {
     return '<div class="empty">No email discovery results yet. Approve contacts and run email discovery to see outcomes here.</div>';
   }
@@ -113,8 +120,12 @@ export function renderEmailResults(
         }
       } catch { /* Keep the missing-source message for invalid URLs. */ }
     }
-    const status = contact.emailStatus === "EMAIL_NOT_FOUND" ? "Email not found"
-      : contact.emailStatus === "PUBLICLY_LISTED" ? "Publicly listed" : "Verified";
+    if (evidence?.notes?.startsWith("Manually entered")) {
+      source += `<br><span class="muted">${escapeHtml(evidence.notes)}</span>`;
+    }
+    const status = contact.emailStatus === "UNKNOWN" ? "Not checked yet"
+      : contact.emailStatus === "EMAIL_NOT_FOUND" ? "Email not found"
+        : contact.emailStatus === "PUBLICLY_LISTED" ? "Publicly listed" : "Verified";
     const treg = contact.guessedEmailSource === "TREG_CATCH_ALL";
     const origin = treg
       ? `<span class="badge UNKNOWN">Guessed · Treg finder, catch-all</span><br><span class="muted">${escapeHtml(contact.guessedEmailBasis)}</span>`
@@ -122,8 +133,8 @@ export function renderEmailResults(
     const guess = contact.guessedEmail
       ? `<strong>${escapeHtml(contact.guessedEmail)}</strong><br>${origin}${contact.guessedEmailSourceUrl ? `<br><a href="${escapeHtml(contact.guessedEmailSourceUrl)}" target="_blank" rel="noreferrer">${treg ? "Treg verifier audit" : "Pattern evidence"} ↗</a>` : ""}<br>${guessVerificationBadge(contact.guessedEmailVerification, contact.guessedEmailVerificationDetail)}${contact.guessedEmailVerificationDetail ? `<br><span class="muted">${escapeHtml(contact.guessedEmailVerificationDetail)}</span>` : ""}${recoveryStatus(contact)}`
       : '<span class="muted">—</span>';
-    return `<tr><td><strong>${escapeHtml(contact.name)}</strong></td><td>${escapeHtml(company?.name ?? "Unknown company")}</td><td>${contact.email ? `<strong>${escapeHtml(contact.email)}</strong>` : '<span class="muted">Not found</span>'}</td><td>${guess}</td><td><span class="badge ${contact.emailStatus}">${status}</span></td><td class="source">${source}</td></tr>`;
+    return `<tr><td><strong>${escapeHtml(contact.name)}</strong></td><td>${escapeHtml(company?.name ?? "Unknown company")}</td><td>${contact.email ? `<strong>${escapeHtml(contact.email)}</strong>` : '<span class="muted">Not found</span>'}</td><td>${guess}</td><td><span class="badge ${contact.emailStatus}">${status}</span></td><td class="source">${source}</td>${campaignId === undefined ? "" : `<td>${manualEmailForm(campaignId, contact)}</td>`}</tr>`;
   }).join("");
 
-  return `<div class="tablewrap"><table class="email-results" aria-label="Email discovery results"><thead><tr><th>Contact</th><th>Company</th><th>Business email</th><th>Guessed email</th><th>Discovery status</th><th>Email source</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `<div class="tablewrap"><table class="email-results" aria-label="Email discovery results"><thead><tr><th>Contact</th><th>Company</th><th>Business email</th><th>Guessed email</th><th>Discovery status</th><th>Email source</th>${campaignId === undefined ? "" : "<th>Manual update</th>"}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }

@@ -158,6 +158,10 @@ which keeps the existing guess; `PROVIDER_ERROR` when Treg fails because of
 credits, billing, quota, or an outage, which keeps the guess and requeues the
 contact. Do not expand to other contacts, draft, approve, or send.
 
+The dashboard's Update email form lets the human replace any contact's email
+with one they found or verified externally (`recordManualEmail`). It requires a
+source URL, clears any guess, and is never invoked from a research workflow.
+
 If no reliable professional business email can be found:
 
 EMAIL_NOT_FOUND

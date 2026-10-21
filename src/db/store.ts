@@ -376,6 +376,48 @@ export class OutboundStore {
     })();
   }
 
+  /**
+   * Stores an address the human found or verified from an external source. It replaces any
+   * guess and keeps a research record pointing at the source the human supplied.
+   */
+  recordManualEmail(input: {
+    contactId: number;
+    email: string;
+    emailStatus: "PUBLICLY_LISTED" | "VERIFIED";
+    sourceUrl: string;
+    note?: string;
+  }): Contact {
+    const email = input.email.trim().toLowerCase();
+    if (!/^[^\s@<>"]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(email)) {
+      throw new WorkflowError("Enter a valid email address");
+    }
+    if (input.emailStatus !== "PUBLICLY_LISTED" && input.emailStatus !== "VERIFIED") {
+      throw new WorkflowError("Choose whether the email is verified or publicly listed");
+    }
+    const sourceUrl = input.sourceUrl.trim();
+    if (!sourceUrl) throw new WorkflowError("A manual email requires the source URL where you found or verified it");
+    checkPublicUrl(sourceUrl, "Email source");
+    const note = input.note?.trim().slice(0, 1000);
+    return this.db.transaction(() => {
+      const contact = this.requireContact(input.contactId);
+      this.db.prepare(`UPDATE contacts SET email = ?, email_status = ?,
+        guessed_email = NULL, guessed_email_pattern = NULL,
+        guessed_email_confidence = NULL, guessed_email_basis = NULL,
+        guessed_email_source_url = NULL, guessed_email_verification = NULL,
+        guessed_email_verification_detail = NULL, guessed_email_verified_at = NULL,
+        guessed_email_source = NULL, guessed_email_candidates_checked = NULL WHERE id = ?`)
+        .run(email, input.emailStatus, contact.id);
+      this.createResearchRecord({
+        companyId: contact.companyId,
+        contactId: contact.id,
+        signal: `Professional business email ${input.emailStatus.toLowerCase()}: ${email}`,
+        sourceUrl,
+        notes: `Manually entered by the user${note ? `: ${note}` : ""}`,
+      });
+      return this.getContact(contact.id)!;
+    })();
+  }
+
   recordEmailGuess(input: {
     contactId: number;
     guessedEmail: string;
