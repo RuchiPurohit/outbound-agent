@@ -24,9 +24,10 @@ export async function verifyGuessedEmails(
   campaignId: number,
   verifier: MailboxVerifier,
   onResult?: (contact: Contact, result: CandidateVerificationResult) => void,
+  options: { includeInconclusive?: boolean } = {},
 ): Promise<GuessVerificationSummary> {
   const summary: GuessVerificationSummary = { VALID: 0, INVALID: 0, CATCH_ALL: 0, UNKNOWN: 0, failed: 0, replaced: 0 };
-  for (const contact of store.listGuessesAwaitingVerification(campaignId)) {
+  for (const contact of store.listGuessesAwaitingVerification(campaignId, options)) {
     const guess = contact.guessedEmail!;
     const company = store.getCompany(contact.companyId)!;
     const alternatives = contact.guessedEmailSource === "PATTERN"

@@ -225,7 +225,11 @@ export function launchWorkflow(
   try {
     child = (dependencies.spawnProcess ?? spawn)(executable, [
       "--search", "-C", process.cwd(), "--sandbox", "workspace-write",
-      "--ask-for-approval", "never", "exec", buildPrompt(request),
+      "--ask-for-approval", "never",
+      // Paid Treg calls need tool approval, which `never` would reject. The human click on
+      // "Recover with Treg" is that approval, so auto-approve Treg for recovery runs only.
+      ...(isEmailRecovery(request) ? ["-c", 'mcp_servers.treg.default_tools_approval_mode="approve"'] : []),
+      "exec", buildPrompt(request),
     ], { stdio: ["ignore", "pipe", "pipe"], env: Object.fromEntries(Object.entries(process.env)
       .filter(([key]) => !key.startsWith("GOOGLE_") && !key.startsWith("GMAIL_")
         && !key.startsWith("MCP_EMAIL_"))) });
@@ -295,13 +299,14 @@ function assertCampaignIdle(store: OutboundStore, campaignId: number): void {
  */
 export function startGuessCheck(
   db: SqliteDatabase, campaignId: number,
-  options: { continueToResearch?: boolean; dependencies?: RunnerDependencies } = {},
+  options: { continueToResearch?: boolean; includeInconclusive?: boolean; dependencies?: RunnerDependencies } = {},
 ): Promise<string> {
   const store = new OutboundStore(db);
   assertCampaignIdle(store, campaignId);
   guessChecks.add(campaignId);
   const verifier = options.dependencies?.verifier ?? new SmtpVerifier();
-  return verifyGuessedEmails(store, campaignId, verifier)
+  return verifyGuessedEmails(store, campaignId, verifier, undefined,
+    { includeInconclusive: options.includeInconclusive })
     .then((summary) => {
       let message = `SMTP guess check: ${formatSummary(summary)}.`;
       const recoverable = store.listEmailRecoveryCandidates(campaignId).length;
@@ -337,4 +342,9 @@ export function launchEmailRecovery(
   const contactIds = new OutboundStore(db).listEmailRecoveryCandidates(campaignId).map(({ id }) => id);
   if (contactIds.length === 0) throw new WorkflowError("No contacts need Treg recovery");
   return launchWorkflow(db, { campaignId, kind: "EMAIL_DISCOVERY", contactIds }, dependencies);
+}
+
+/** A targeted post-SMTP Treg recovery, as opposed to normal (Treg-free) email discovery. */
+export function isEmailRecovery(request: WorkflowRequest): boolean {
+  return request.kind === "EMAIL_DISCOVERY" && !!request.contactIds?.length;
 }

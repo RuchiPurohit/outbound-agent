@@ -9,7 +9,7 @@ import { SmtpVerifier } from "../src/email/smtpVerifier.js";
 import { patternCandidates } from "../src/email/guessPatterns.js";
 import { verifyGuessedEmails, type MailboxVerifier } from "../src/email/verifyGuesses.js";
 import type { GuessVerification } from "../src/db/types.js";
-import { renderEmailResults } from "../src/web/emailResults.js";
+import { renderEmailPipelineStatus, renderEmailResults } from "../src/web/emailResults.js";
 import {
   buildPrompt, isCheckingGuesses, launchEmailRecovery, launchWorkflow, startGuessCheck, validateRequest,
 } from "../src/workflows/runner.js";
@@ -289,7 +289,6 @@ describe("Email pipeline orchestration", () => {
   it("chains discovery → SMTP check → research and never starts Treg automatically", async () => {
     const { db, store, campaign, contact } = guessFixture();
     try {
-      store.recordGuessVerification({ contactId: contact.id, guessedEmail: "pat@acme.test", verdict: "UNKNOWN", detail: "" });
       const prompts: string[] = [];
       const done = startGuessCheck(db, campaign.id, { continueToResearch: true, dependencies: {
         verifier: fakeVerifier({ "pat@acme.test": "CATCH_ALL" }),
@@ -297,7 +296,7 @@ describe("Email pipeline orchestration", () => {
         spawnProcess: (_executable, args) => { prompts.push(args[args.length - 1]!); return noCodex.spawnProcess(); },
       } });
       assert.equal(isCheckingGuesses(campaign.id), true);
-      assert.throws(() => launchEmailRecovery(db, campaign.id, noCodex), /SMTP check/);
+      assert.throws(() => launchWorkflow(db, { campaignId: campaign.id, kind: "PROSPECT_RESEARCH" }, noCodex), /SMTP check/);
       assert.match(await done, /1 catch-all.*Automatically started PROSPECT_RESEARCH/);
       await waitIdle(store, campaign.id);
       assert.deepEqual(store.listWorkflowRuns(campaign.id).map(({ kind }) => kind), ["PROSPECT_RESEARCH"]);
@@ -410,6 +409,55 @@ describe("Post-SMTP Treg recovery", () => {
       store.markEmailRecoveryStarted(campaign.id, [contact.id]);
       assert.throws(() => store.recordEmailRecovery({ contactId: contact.id, outcome: "CATCH_ALL_CANDIDATE",
         email: "pat@gmail.com", sourceUrl: audit, notes: "n" }), /company domain/);
+    } finally { db.close(); }
+  });
+});
+
+describe("Pipeline visibility", () => {
+  it("auto-approves Treg tool calls only for recovery runs", async () => {
+    const { db, store, campaign } = guessFixture("CATCH_ALL");
+    try {
+      const calls: string[][] = [];
+      const capture = { resolveExecutable: () => "simulated-codex",
+        spawnProcess: (_executable: string, args: string[]) => { calls.push(args); return noCodex.spawnProcess(); } };
+      launchEmailRecovery(db, campaign.id, capture);
+      await waitIdle(store, campaign.id);
+      store.reviewContact(store.createContact({ companyId: store.listCompanies()[0]!.id, name: "New Person" }).id, "APPROVED");
+      launchWorkflow(db, { campaignId: campaign.id, kind: "EMAIL_DISCOVERY" }, capture);
+      await waitIdle(store, campaign.id);
+      const approval = 'mcp_servers.treg.default_tools_approval_mode="approve"';
+      assert.ok(calls[0]!.includes(approval));
+      assert.ok(calls[0]!.indexOf(approval) < calls[0]!.indexOf("exec"));
+      assert.ok(!calls[1]!.includes(approval));
+    } finally { db.close(); }
+  });
+
+  it("counts only unchecked guesses unless inconclusive ones are requested", () => {
+    const { db, store, campaign } = guessFixture("UNKNOWN");
+    try {
+      assert.equal(store.listGuessesAwaitingVerification(campaign.id).length, 0);
+      assert.equal(store.listGuessesAwaitingVerification(campaign.id, { includeInconclusive: true }).length, 1);
+    } finally { db.close(); }
+  });
+
+  it("reports SMTP totals, a running recovery, and a recovery that recorded nothing", () => {
+    const { db, store, campaign, contact } = guessFixture("CATCH_ALL");
+    try {
+      const contacts = () => store.listContacts();
+      assert.match(renderEmailPipelineStatus(contacts(), [], { checking: false }),
+        /all guesses checked · 0 valid · 0 invalid · 1 catch-all · 0 inconclusive/);
+      assert.match(renderEmailPipelineStatus(contacts(), [], { checking: true }), /SMTP check running/);
+
+      store.markEmailRecoveryStarted(campaign.id, [contact.id]);
+      const run = store.createWorkflowRun({ campaignId: campaign.id, kind: "EMAIL_DISCOVERY",
+        details: JSON.stringify({ campaignId: campaign.id, kind: "EMAIL_DISCOVERY", contactIds: [contact.id] }) });
+      store.startWorkflowRun(run.id);
+      assert.match(renderEmailPipelineStatus(contacts(), store.listWorkflowRuns(campaign.id), { checking: false }),
+        new RegExp(`Treg recovery running</strong> \\(run ${run.id}\\)`));
+      store.completeWorkflowRun(run.id);
+      const silent = renderEmailPipelineStatus(contacts(), store.listWorkflowRuns(campaign.id), { checking: false });
+      assert.match(silent, /recorded no outcome for 1 contact/);
+      assert.deepEqual(store.listEmailRecoveryCandidates(campaign.id).map(({ id }) => id), [contact.id]);
     } finally { db.close(); }
   });
 });

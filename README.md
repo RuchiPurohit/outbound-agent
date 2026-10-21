@@ -95,7 +95,11 @@ Email discovery is a three-step pipeline:
    recorded outcome are never sent to Treg again. If Treg fails for credits,
    quota, or an outage, the dashboard shows "Treg recovery paused" and those
    contacts retry on the next click. Recovered contacts need **Run prospect
-   research** afterwards.
+   research** afterwards. Because dashboard workflows run Codex with
+   `--ask-for-approval never`, recovery runs alone pass
+   `-c mcp_servers.treg.default_tools_approval_mode="approve"` so paid Treg
+   calls are not rejected; your click on the button is that approval. Normal
+   discovery runs keep the default policy, so Treg calls there are refused.
 
 Optional `.env` overrides for the SMTP check: `SMTP_VERIFY_HELO` (EHLO name,
 default hostname) and `SMTP_VERIFY_FROM` (envelope sender, default `<>`).

@@ -1,4 +1,4 @@
-import type { Company, Contact, GuessVerification, ResearchRecord } from "../db/types.js";
+import type { Company, Contact, GuessVerification, ResearchRecord, WorkflowRun } from "../db/types.js";
 
 const escapeHtml = (value: unknown): string => String(value ?? "")
   .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -16,6 +16,49 @@ export function guessVerificationBadge(verification: GuessVerification | null, d
   if (!verification) return '<span class="badge">Not SMTP-checked</span>';
   const [tone, label] = VERIFICATION_BADGES[verification];
   return `<span class="badge ${tone}"${detail ? ` title="${escapeHtml(detail)}"` : ""}>${label}</span>`;
+}
+
+/**
+ * Persistent SMTP and Treg progress for the email discovery card, derived from SQLite so it
+ * survives dashboard restarts. `runs` are the campaign's workflow runs, newest first.
+ */
+export function renderEmailPipelineStatus(
+  contacts: Contact[], runs: WorkflowRun[], state: { checking: boolean; lastCheck?: string },
+): string {
+  const guessed = contacts.filter(({ status, emailStatus, guessedEmail }) =>
+    status === "APPROVED" && emailStatus === "EMAIL_NOT_FOUND" && !!guessedEmail);
+  const parts: string[] = [];
+  if (state.checking) {
+    parts.push('<div class="notice">SMTP check running… This page refreshes every 3s.</div>');
+  } else if (guessed.length) {
+    const count = (verdict: GuessVerification | null) =>
+      guessed.filter(({ guessedEmailVerification }) => guessedEmailVerification === verdict).length;
+    const unchecked = count(null);
+    parts.push(`<p class="muted"><strong>SMTP check:</strong> ${unchecked ? `${unchecked} not checked yet · ` : "all guesses checked · "}${count("VALID")} valid · ${count("INVALID")} invalid · ${count("CATCH_ALL")} catch-all · ${count("UNKNOWN")} inconclusive${state.lastCheck ? `<br>${escapeHtml(state.lastCheck)}` : ""}</p>`);
+  }
+
+  const recoveries = runs.filter(({ kind, details }) => kind === "EMAIL_DISCOVERY"
+    && !!details && (JSON.parse(details) as { contactIds?: number[] }).contactIds?.length);
+  const latest = recoveries[0];
+  if (latest) {
+    const ids = new Set((JSON.parse(latest.details!) as { contactIds: number[] }).contactIds);
+    const targets = contacts.filter(({ id }) => ids.has(id));
+    const tally = (predicate: (contact: Contact) => boolean) => targets.filter(predicate).length;
+    if (latest.status === "RUNNING" || latest.status === "PENDING") {
+      parts.push(`<div class="notice"><strong>Treg recovery running</strong> (run ${latest.id}) for ${ids.size} contact(s)… Progress is under Workflow runs; this page refreshes every 3s.</div>`);
+    } else {
+      const silent = tally((contact) => contact.emailRecoveryOutcome === null && !contact.emailRecoveryError);
+      parts.push(`<p class="muted"><strong>Last Treg recovery</strong> (run ${latest.id}, ${latest.status.toLowerCase()}): ${tally(({ emailRecoveryOutcome }) => emailRecoveryOutcome === "VERIFIED")} verified · ${tally(({ emailRecoveryOutcome }) => emailRecoveryOutcome === "CATCH_ALL_CANDIDATE")} catch-all address found · ${tally(({ emailRecoveryOutcome }) => emailRecoveryOutcome === "NOT_FOUND")} not found · ${tally(({ emailRecoveryError }) => !!emailRecoveryError)} paused by a provider error</p>`);
+      if (silent) {
+        parts.push(`<div class="notice error"><strong>Treg recovery run ${latest.id} recorded no outcome for ${silent} contact(s).</strong> Check its output under Workflow runs; these contacts are back in the Recover with Treg count.</div>`);
+      }
+    }
+  }
+  const paused = contacts.filter(({ emailRecoveryStartedAt, emailRecoveryError }) => !emailRecoveryStartedAt && emailRecoveryError);
+  if (paused.length) {
+    parts.push(`<div class="notice error"><strong>Treg recovery paused:</strong> ${escapeHtml(paused[0].emailRecoveryError)}. ${paused.length} contact(s) will retry the next time you click Recover with Treg.</div>`);
+  }
+  return parts.join("");
 }
 
 function recoveryStatus(contact: Contact): string {

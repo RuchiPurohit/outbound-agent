@@ -414,12 +414,13 @@ export class OutboundStore {
   }
 
   /** Approved guesses in the campaign that have no conclusive SMTP verdict yet. */
-  listGuessesAwaitingVerification(campaignId: number): Contact[] {
+  listGuessesAwaitingVerification(campaignId: number, options: { includeInconclusive?: boolean } = {}): Contact[] {
     return this.listCompanies({ campaignId, status: "APPROVED" })
       .flatMap(({ id }) => this.listContacts(id))
       .filter((contact) => contact.status === "APPROVED" && contact.emailStatus === "EMAIL_NOT_FOUND"
         && !contact.email && !!contact.guessedEmail
-        && (contact.guessedEmailVerification === null || contact.guessedEmailVerification === "UNKNOWN"));
+        && (contact.guessedEmailVerification === null
+          || (options.includeInconclusive === true && contact.guessedEmailVerification === "UNKNOWN")));
   }
 
   /**
