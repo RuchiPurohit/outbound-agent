@@ -447,4 +447,10 @@ export const migrations: readonly string[] = [
       CHECK (guessed_email_candidates_checked IS NULL OR guessed_email_candidates_checked > 0);
     ALTER TABLE contacts ADD COLUMN pattern_evidence_checked_at TEXT;
   `,
+  `
+    ALTER TABLE companies ADD COLUMN email_domain TEXT;
+    ALTER TABLE companies ADD COLUMN email_domain_source_url TEXT;
+    ALTER TABLE companies ADD COLUMN email_domain_basis TEXT;
+    ALTER TABLE companies ADD COLUMN email_domain_checked_at TEXT;
+  `,
 ];

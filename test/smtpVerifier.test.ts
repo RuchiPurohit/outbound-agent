@@ -525,3 +525,55 @@ describe("Free follow-ups for unconfirmed guesses", () => {
     } finally { db.close(); }
   });
 });
+
+describe("Company email domain", () => {
+  it("re-searches a no-MX guess once, moves guesses to the sourced mail domain, and re-checks them", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const store = new OutboundStore(db);
+      const campaign = store.createCampaign({ name: "Mail domain", segment: "Games" });
+      const company = store.createCompany({ campaignId: campaign.id, name: "ENVER", domain: "enver.test" });
+      store.reviewCompany(company.id, "APPROVED");
+      const contact = store.createContact({ companyId: company.id, name: "Greg Bickford" });
+      store.reviewContact(contact.id, "APPROVED");
+      store.recordEmailDiscovery({ contactId: contact.id, emailStatus: "EMAIL_NOT_FOUND" });
+      store.recordEmailGuess({ contactId: contact.id, guessedEmail: "greg@enver.test",
+        pattern: "firstname", confidence: "COMMON_PATTERN", basis: "Common pattern" });
+      store.recordGuessVerification({ contactId: contact.id, guessedEmail: "greg@enver.test",
+        verdict: "INVALID", detail: "enver.test has no MX records (ENODATA)", candidatesChecked: 5 });
+
+      // Searched before, but the website domain has no mail server: one more search per company.
+      db.prepare("UPDATE contacts SET pattern_evidence_checked_at = ? WHERE id = ?").run(new Date().toISOString(), contact.id);
+      assert.deepEqual(store.listPatternEvidenceCandidates(campaign.id).map(({ id }) => id), [contact.id]);
+      store.markPatternEvidenceStarted(campaign.id, [contact.id]);
+      assert.ok(store.getCompany(company.id)!.emailDomainCheckedAt);
+      assert.equal(store.listPatternEvidenceCandidates(campaign.id).length, 0);
+
+      assert.throws(() => store.recordCompanyEmailDomain({ companyId: company.id, emailDomain: "gmail.com",
+        sourceUrl: "https://enver.test/contact", basis: "x" }), /personal email provider/);
+      assert.throws(() => store.recordCompanyEmailDomain({ companyId: company.id, emailDomain: "enverstudio.test",
+        sourceUrl: "", basis: "x" }), /source URL/);
+      const updated = store.recordCompanyEmailDomain({ companyId: company.id, emailDomain: "EnverStudio.test",
+        sourceUrl: "https://enver.test/contact", basis: "Contact page lists hi@enverstudio.test" });
+      assert.equal(updated.emailDomain, "enverstudio.test");
+      const moved = store.getContact(contact.id)!;
+      assert.equal(moved.guessedEmail, "greg@enverstudio.test");
+      assert.equal(moved.guessedEmailVerification, null);
+      assert.match(moved.guessedEmailBasis!, /Moved from enver.test to the company's email domain enverstudio.test/);
+
+      // Guesses now validate against the mail domain, and SMTP alternatives use it.
+      assert.throws(() => store.recordEmailGuess({ contactId: contact.id, guessedEmail: "greg@enver.test",
+        pattern: "firstname", confidence: "COMMON_PATTERN", basis: "Common pattern" }), /email domain/);
+      const probed: string[][] = [];
+      await verifyGuessedEmails(store, campaign.id, fakeVerifier({ "greg.bickford@enverstudio.test": "VALID" }, probed));
+      assert.ok(probed[0]!.every((address) => address.endsWith("@enverstudio.test")));
+      assert.equal(store.getContact(contact.id)!.guessedEmail, "greg.bickford@enverstudio.test");
+      assert.equal(store.getContact(contact.id)!.guessedEmailVerification, "VALID");
+
+      assert.match(buildPrompt({ campaignId: campaign.id, kind: "EMAIL_DISCOVERY", contactIds: [contact.id],
+        emailTask: "PATTERN_EVIDENCE" }), /recordCompanyEmailDomain/);
+      assert.match(renderEmailResults([store.getCompany(company.id)!], store.listContacts(company.id), []),
+        /Email domain: enverstudio.test/);
+    } finally { db.close(); }
+  });
+});

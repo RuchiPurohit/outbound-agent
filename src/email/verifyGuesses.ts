@@ -1,4 +1,4 @@
-import type { OutboundStore } from "../db/store.js";
+import { mailDomainOf, type OutboundStore } from "../db/store.js";
 import type { Contact, GuessVerification } from "../db/types.js";
 import { patternCandidates } from "./guessPatterns.js";
 import type { CandidateVerificationResult } from "./smtpVerifier.js";
@@ -31,7 +31,7 @@ export async function verifyGuessedEmails(
     const guess = contact.guessedEmail!;
     const company = store.getCompany(contact.companyId)!;
     const alternatives = contact.guessedEmailSource === "PATTERN"
-      ? patternCandidates(contact.name, company.domain).filter(({ email }) => email !== guess.toLowerCase())
+      ? patternCandidates(contact.name, mailDomainOf(company)).filter(({ email }) => email !== guess.toLowerCase())
       : [];
     try {
       const result = await verifier.verifyCandidates([guess, ...alternatives.map(({ email }) => email)]);

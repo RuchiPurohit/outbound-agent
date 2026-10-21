@@ -54,6 +54,12 @@ export interface Company {
   chatImplementation: ChatImplementation;
   chatVendorName: string | null;
   chatImplementationSourceUrl: string | null;
+  /** Mail domain staff use when it differs from the website domain; null means `domain`. */
+  emailDomain: string | null;
+  emailDomainSourceUrl: string | null;
+  emailDomainBasis: string | null;
+  /** When a search for the real mail domain started (website domain has no MX); runs once. */
+  emailDomainCheckedAt: string | null;
   status: ReviewStatus;
   createdAt: string;
 }

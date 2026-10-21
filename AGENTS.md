@@ -130,6 +130,12 @@ verified, or sendable. Store at most one best guess only after recording
 `EMAIL_NOT_FOUND`, using the separate guess fields and `recordEmailGuess`; never
 put a guess in `contacts.email`.
 
+Guesses and checks use the company's email domain (`companies.email_domain`,
+else `companies.domain`). When the website domain has no mail server or the
+company's pages show addresses on another domain, record it with
+`recordCompanyEmailDomain` and a public source URL; never use a personal email
+provider or Treg's word alone.
+
 Prefer a publicly demonstrated same-domain employee pattern. Otherwise use the
 ordered common patterns in `prompts/email-discovery.md`. Record the pattern,
 confidence, and basis. `PATTERN_SUPPORTED` also requires a public source URL.

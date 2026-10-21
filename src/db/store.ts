@@ -1,5 +1,6 @@
 import type { SqliteDatabase } from "./database.js";
 import { randomUUID } from "node:crypto";
+import { patternCandidates } from "../email/guessPatterns.js";
 import type {
   Campaign, CampaignStatus, ChatFeatureStatus, ChatImplementation, Company, CompanyScoreBreakdown,
   Contact, EmailGuessConfidence, EmailGuessPattern, EmailRecoveryOutcome, EmailStatus, GuessVerification, Outreach, ResearchRecord,
@@ -62,11 +63,19 @@ function companyEmailDomain(value: string): string {
   return domain;
 }
 
-function checkedGuessedEmail(value: string, companyDomain: string): string {
+/** The domain company mailboxes live on: the sourced email domain, else the website domain. */
+export function mailDomainOf(company: Pick<Company, "domain" | "emailDomain">): string {
+  return company.emailDomain ?? company.domain.trim().toLowerCase().replace(/^www\./, "");
+}
+
+/** SMTP detail written when the mail domain cannot receive mail (see smtpVerifier). */
+const NO_MAIL_DETAIL = /has no MX records|does not accept mail \(null MX\)/;
+
+function checkedGuessedEmail(value: string, company: Pick<Company, "domain" | "emailDomain">): string {
   const email = value.trim().toLowerCase();
   const match = /^([a-z0-9]+(?:[._-][a-z0-9]+)*)@([a-z0-9.-]+)$/.exec(email);
-  if (!match || match[2] !== companyEmailDomain(companyDomain)) {
-    throw new WorkflowError("Guessed email must be a valid address on the company domain");
+  if (!match || match[2] !== companyEmailDomain(mailDomainOf(company))) {
+    throw new WorkflowError("Guessed email must be a valid address on the company domain (or its recorded email domain)");
   }
   return email;
 }
@@ -434,7 +443,7 @@ export class OutboundStore {
       throw new WorkflowError("An email guess may only follow an EMAIL_NOT_FOUND result");
     }
     const company = this.requireCompany(contact.companyId);
-    const guessedEmail = checkedGuessedEmail(input.guessedEmail, company.domain);
+    const guessedEmail = checkedGuessedEmail(input.guessedEmail, company);
     const basis = input.basis.trim();
     if (!basis) throw new WorkflowError("An email guess requires a basis");
     const sourceUrl = input.sourceUrl?.trim() || null;
@@ -496,7 +505,7 @@ export class OutboundStore {
           throw new WorkflowError("Only pattern guesses can be replaced by another SMTP-checked pattern");
         }
         const company = this.requireCompany(contact.companyId);
-        const email = checkedGuessedEmail(input.replacement.email, company.domain);
+        const email = checkedGuessedEmail(input.replacement.email, company);
         const basis = `SMTP check accepted the ${input.replacement.pattern} pattern after rejecting the stored guess `
           + `${contact.guessedEmail} (${contact.guessedEmailPattern}). Earlier basis: ${contact.guessedEmailBasis}`;
         this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_pattern = ?,
@@ -531,24 +540,75 @@ export class OutboundStore {
   /**
    * Pattern guesses on domains where SMTP could not confirm the mailbox (catch-all, invalid,
    * or inconclusive) that lack public pattern evidence and have never been searched for it.
+   * A guess whose domain cannot receive mail (no MX) is also a candidate once per company, so
+   * the search can find the domain staff actually use.
    */
   listPatternEvidenceCandidates(campaignId: number): Contact[] {
     return this.listCompanies({ campaignId, status: "APPROVED" })
-      .flatMap(({ id }) => this.listContacts(id))
-      .filter((contact) => contact.status === "APPROVED" && contact.emailStatus === "EMAIL_NOT_FOUND"
-        && !contact.email && !!contact.guessedEmail && contact.guessedEmailSource === "PATTERN"
-        && contact.guessedEmailConfidence !== "PATTERN_SUPPORTED" && contact.patternEvidenceCheckedAt === null
-        && ["INVALID", "CATCH_ALL", "UNKNOWN"].includes(contact.guessedEmailVerification ?? ""));
+      .flatMap((company) => this.listContacts(company.id)
+        .filter((contact) => contact.status === "APPROVED" && contact.emailStatus === "EMAIL_NOT_FOUND"
+          && !contact.email && !!contact.guessedEmail && contact.guessedEmailSource === "PATTERN"
+          && ["INVALID", "CATCH_ALL", "UNKNOWN"].includes(contact.guessedEmailVerification ?? "")
+          && ((contact.guessedEmailConfidence !== "PATTERN_SUPPORTED" && contact.patternEvidenceCheckedAt === null)
+            || (this.needsEmailDomainSearch(company, contact)))));
+  }
+
+  /** The guess's domain has no mail server and no other email domain has been searched for. */
+  private needsEmailDomainSearch(company: Company, contact: Contact): boolean {
+    return company.emailDomainCheckedAt === null && contact.guessedEmailVerification === "INVALID"
+      && NO_MAIL_DETAIL.test(contact.guessedEmailVerificationDetail ?? "");
   }
 
   /** Marks contacts as searched for pattern evidence so the free search runs once per contact. */
   markPatternEvidenceStarted(campaignId: number, contactIds: number[]): void {
     this.db.transaction(() => {
-      const allowed = new Set(this.listPatternEvidenceCandidates(campaignId).map(({ id }) => id));
+      const candidates = new Map(this.listPatternEvidenceCandidates(campaignId).map((contact) => [contact.id, contact]));
       for (const id of contactIds) {
-        if (!allowed.has(id)) throw new WorkflowError(`Contact ${id} is not awaiting a pattern-evidence search`);
+        const contact = candidates.get(id);
+        if (!contact) throw new WorkflowError(`Contact ${id} is not awaiting a pattern-evidence search`);
         this.db.prepare("UPDATE contacts SET pattern_evidence_checked_at = ? WHERE id = ?").run(now(), id);
+        if (this.needsEmailDomainSearch(this.requireCompany(contact.companyId), contact)) {
+          this.db.prepare("UPDATE companies SET email_domain_checked_at = ? WHERE id = ?").run(now(), contact.companyId);
+        }
       }
+    })();
+  }
+
+  /**
+   * Records the domain company staff use for email when it differs from the website domain,
+   * backed by a public page that shows an address on it. Pattern guesses on the old domain
+   * move to the same pattern on the new one and are queued for a fresh SMTP check.
+   */
+  recordCompanyEmailDomain(input: { companyId: number; emailDomain: string; sourceUrl: string; basis: string }): Company {
+    const emailDomain = companyEmailDomain(input.emailDomain);
+    const sourceUrl = input.sourceUrl.trim();
+    const basis = input.basis.trim();
+    if (!sourceUrl) throw new WorkflowError("An email domain requires a public source URL showing an address on it");
+    checkPublicUrl(sourceUrl, "Email domain source");
+    if (!basis) throw new WorkflowError("An email domain requires a basis naming the observed address");
+    if (/^(gmail|googlemail|yahoo|hotmail|outlook|live|icloud|me|aol|proton|protonmail|gmx)\./.test(emailDomain)) {
+      throw new WorkflowError("A personal email provider cannot be a company email domain");
+    }
+    return this.db.transaction(() => {
+      const company = this.requireCompany(input.companyId);
+      const previous = mailDomainOf(company);
+      const website = mailDomainOf({ ...company, emailDomain: null });
+      this.db.prepare(`UPDATE companies SET email_domain = ?, email_domain_source_url = ?, email_domain_basis = ?,
+        email_domain_checked_at = COALESCE(email_domain_checked_at, ?) WHERE id = ?`)
+        .run(emailDomain === website ? null : emailDomain, sourceUrl, basis.slice(0, 1000), now(), company.id);
+      if (previous === emailDomain) return this.getCompany(company.id)!;
+      for (const contact of this.listContacts(company.id)) {
+        if (contact.emailStatus !== "EMAIL_NOT_FOUND" || contact.email || !contact.guessedEmail
+          || contact.guessedEmailSource !== "PATTERN" || !contact.guessedEmail.endsWith(`@${previous}`)) continue;
+        const local = contact.guessedEmail.slice(0, -previous.length - 1);
+        const moved = patternCandidates(contact.name, emailDomain)
+          .find(({ pattern }) => pattern === contact.guessedEmailPattern)?.email ?? `${local}@${emailDomain}`;
+        this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_basis = ?,
+          guessed_email_verification = NULL, guessed_email_verification_detail = NULL,
+          guessed_email_verified_at = NULL, guessed_email_candidates_checked = NULL WHERE id = ?`)
+          .run(moved, `${contact.guessedEmailBasis ?? ""} Moved from ${previous} to the company's email domain ${emailDomain} (${sourceUrl}).`.trim(), contact.id);
+      }
+      return this.getCompany(company.id)!;
     })();
   }
 
@@ -605,7 +665,7 @@ export class OutboundStore {
           email: input.email, sourceUrl: input.sourceUrl, notes });
       } else if (input.outcome === "CATCH_ALL_CANDIDATE") {
         const company = this.requireCompany(contact.companyId);
-        const guessedEmail = checkedGuessedEmail(input.email!, company.domain);
+        const guessedEmail = checkedGuessedEmail(input.email!, company);
         this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_source = 'TREG_CATCH_ALL',
           guessed_email_pattern = NULL, guessed_email_confidence = NULL, guessed_email_basis = ?,
           guessed_email_source_url = ?, guessed_email_verification = 'CATCH_ALL',
@@ -1201,6 +1261,10 @@ function companyFromRow(row: Row): Company {
     chatImplementation: text(row, "chat_implementation") as Company["chatImplementation"],
     chatVendorName: nullableText(row, "chat_vendor_name"),
     chatImplementationSourceUrl: nullableText(row, "chat_implementation_source_url"),
+    emailDomain: nullableText(row, "email_domain"),
+    emailDomainSourceUrl: nullableText(row, "email_domain_source_url"),
+    emailDomainBasis: nullableText(row, "email_domain_basis"),
+    emailDomainCheckedAt: nullableText(row, "email_domain_checked_at"),
     status: text(row, "status") as Company["status"],
     createdAt: text(row, "created_at") };
 }

@@ -18,6 +18,9 @@ export interface WorkflowRequest {
   emailTask?: "PATTERN_EVIDENCE";
 }
 
+/** How every email workflow finds and records the domain company mailboxes actually use. */
+const EMAIL_DOMAIN_RULE = "The company's email domain is companies.email_domain when set, otherwise companies.domain. If a guess's SMTP detail says its domain has no MX records, or a credible public page (prefer the company's own contact, team, or about pages) shows the company's addresses on a different domain, call recordCompanyEmailDomain({companyId, emailDomain, sourceUrl, basis}) with the page URL and a basis naming the exact observed address; a generic role address such as hi@ establishes the domain but not a personal pattern. This moves pattern guesses to the new domain and queues them for a fresh SMTP check. Never record a personal email provider or an unrelated company's domain.";
+
 export function buildPrompt(request: WorkflowRequest): string {
   const instructions = workflowPrompt(request);
   return [instructions,
@@ -59,7 +62,8 @@ function workflowPrompt(request: WorkflowRequest): string {
           `Process ONLY these contact IDs: ${JSON.stringify(request.contactIds)}.`,
           "Each has an EMAIL_NOT_FOUND pattern guess whose SMTP result was catch-all, invalid, or inconclusive.",
           "Do not use Treg. Search free public sources for exact addresses of any person on the same company domain that reveal its pattern.",
-          "Group contacts by company domain and search each domain once.",
+          "Group contacts by company and search each company's email domain once.",
+          EMAIL_DOMAIN_RULE,
           "When an exact same-domain personal address is found, call recordEmailGuess for each affected contact with the matching pattern, confidence PATTERN_SUPPORTED, the source URL, and a basis naming the observed address and its pattern.",
           "Generic role addresses (hello@, info@, support@, careers@, press@) do not demonstrate a personal pattern. Never use a personal email domain.",
           "If no evidence is found for a domain, leave its guesses unchanged; do not call recordEmailDiscovery.",
@@ -74,6 +78,8 @@ function workflowPrompt(request: WorkflowRequest): string {
           `Process ONLY these contact IDs: ${JSON.stringify(request.contactIds)}.`,
           "Each contact has an EMAIL_NOT_FOUND guess whose SMTP result was invalid, catch-all, or inconclusive.",
           "Before the first finder call, check the Treg balance if the catalog exposes one.",
+          "Use the company's email domain (companies.email_domain, else companies.domain) as the identity domain.",
+          "If Treg returns an identity-matched address on a different domain, do not accept it on Treg's word; only if a credible public page shows the company's addresses on that domain, call recordCompanyEmailDomain with that page before recording the outcome.",
           "Use Treg to find a fresh professional business address for the approved identity; do not submit or preserve the failed guessed address as a discovered result.",
           "Verify every Treg result, then record exactly one outcome per contact with recordEmailRecovery({contactId, outcome, email, sourceUrl, notes}); never call recordEmailDiscovery or recordEmailGuess in this run.",
           "outcome VERIFIED only when treg.people.email.verify returns exactly valid and the returned identity matches the approved contact.",
@@ -91,6 +97,7 @@ function workflowPrompt(request: WorkflowRequest): string {
         "Do not use Treg in this run; it runs only in the separate post-SMTP recovery. Search credible public sources only.",
         "Process APPROVED contacts whose email status is UNKNOWN, plus EMAIL_NOT_FOUND contacts without a stored guess for guess-only completion.",
         "Persist every sourced result through recordEmailDiscovery and update the readable email report.",
+        EMAIL_DOMAIN_RULE,
         "After EMAIL_NOT_FOUND, optionally store one clearly labeled, non-sendable company-domain guess through recordEmailGuess, following the runbook's pattern order and evidence rules.",
         "Never store a guess in contacts.email or treat it as public or verified. Do not draft outreach, create Gmail drafts, or send messages.",
         "Complete the workflow; do not merely explain how to do it.",
