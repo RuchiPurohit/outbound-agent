@@ -136,7 +136,7 @@ describe("Prospect workflow", () => {
   });
 
   it("does not continue failed research or prospects without credible signals", async () => {
-    const { db, store, campaign, contact, email } = fixture();
+    const { db, store, campaign, contact, email, research } = fixture();
     try {
       email();
       const fakeSpawn = () => spawn(process.execPath, ["-e", "process.exit(1)"]);
@@ -152,6 +152,17 @@ describe("Prospect workflow", () => {
       assert.match(renderProspectStages(store, campaign.id), /No credible angle/);
       assert.match(renderProspectStages(store, campaign.id),
         new RegExp(`name="contactIds" value="${contact.id}"[^>]*disabled`));
+      assert.match(renderProspectStages(store, campaign.id),
+        new RegExp(`formaction="/campaigns/${campaign.id}/contacts/${contact.id}/recheck-angle"`));
+
+      // Recheck clears only the NO_SIGNAL result, so research can run again.
+      store.resetNoSignalResearch(contact.id);
+      assert.equal(store.getProspectResearch(contact.id), undefined);
+      assert.doesNotThrow(() => validateRequest(store, { campaignId: campaign.id, kind: "PROSPECT_RESEARCH" }));
+      assert.throws(() => store.resetNoSignalResearch(contact.id), /Only a NO_SIGNAL/);
+      research();
+      assert.throws(() => store.resetNoSignalResearch(contact.id), /Only a NO_SIGNAL/);
+      assert.doesNotMatch(renderProspectStages(store, campaign.id), /recheck-angle/);
     } finally { db.close(); }
   });
 

@@ -147,6 +147,7 @@ function campaignReturn(campaignId: number, action: string): { path: string; par
     return { path: `${path}/follow-ups`, params: { open: sentId }, anchor: `sent-${sentId}` };
   }
   if (draftId) return { path, params: { draftId }, anchor: `email-${draftId}` };
+  if (/^contacts\/\d+\/recheck-angle$/.test(action)) return { path, params: {}, anchor: "prospect-research" };
   if (/^contacts\/\d+\/email$/.test(action)) return { path, params: {}, anchor: "email-discovery" };
   if (action === "workflows/follow-up-generation") return { path: `${path}/follow-ups`, params: {}, anchor: "generate-follow-ups" };
   const anchors: Record<string, string> = {
@@ -507,6 +508,22 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }); return;
     }
 
+    const recheck = action.match(/^contacts\/(\d+)\/recheck-angle$/);
+    if (recheck) {
+      const contact = store.getContact(Number(recheck[1]));
+      if (!contact || store.getCompany(contact.companyId)?.campaignId !== campaignId) {
+        throw new WorkflowError("Contact does not belong to this campaign");
+      }
+      if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {
+        throw new WorkflowError("Wait for the active workflow to finish before rechecking an angle");
+      }
+      if (!store.listResearchEligibleProspects(campaignId).some(({ id }) => id === contact.id)) {
+        throw new WorkflowError("This contact is not eligible for prospect research (it needs a usable email)");
+      }
+      store.resetNoSignalResearch(contact.id);
+      const run = launchWorkflow(db, { campaignId, kind: "PROSPECT_RESEARCH" });
+      back({ notice: `Rechecking the angle for ${contact.name} (run ${run.id}). The result stays separate from drafting until you select it.` }); return;
+    }
     const manualEmail = action.match(/^contacts\/(\d+)\/email$/);
     if (manualEmail) {
       const contact = store.getContact(Number(manualEmail[1]));

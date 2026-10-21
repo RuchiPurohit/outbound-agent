@@ -732,6 +732,19 @@ export class OutboundStore {
     })();
   }
 
+  /**
+   * Clears a NO_SIGNAL research result so the next prospect research run looks again.
+   * READY research and contacts with outreach are never reset. Sourced research records stay.
+   */
+  resetNoSignalResearch(contactId: number): void {
+    this.db.transaction(() => {
+      const analysis = this.getProspectResearch(contactId);
+      if (analysis?.status !== "NO_SIGNAL") throw new WorkflowError("Only a NO_SIGNAL research result can be rechecked");
+      if (this.listOutreach(contactId).length > 0) throw new WorkflowError("This contact already has outreach");
+      this.db.prepare("DELETE FROM prospect_research WHERE contact_id = ?").run(contactId);
+    })();
+  }
+
   getProspectResearch(contactId: number): ProspectResearch | undefined {
     const row = this.db.prepare("SELECT * FROM prospect_research WHERE contact_id = ?")
       .get(contactId) as Row | undefined;
