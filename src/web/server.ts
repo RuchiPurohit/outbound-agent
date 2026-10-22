@@ -13,6 +13,7 @@ import { renderProspectStages } from "./prospectStages.js";
 import { countDueFollowUps, renderFollowUps } from "./followUps.js";
 import { FileTokenStore, GmailClient } from "../gmail/client.js";
 import { EmailSending } from "../gmail/sending.js";
+import { isSending, SEND_QUEUE_GAP_MS, sendQueueState, startSendQueue } from "../gmail/sendQueue.js";
 import { renderGmailSettings } from "./gmailSettings.js";
 import type { EmailTransport } from "../email/transport.js";
 import { FileMcpTokenStore, McpEmailTransport } from "../email/mcpTransport.js";
@@ -130,6 +131,34 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
 <script>${LIVE_REFRESH_SCRIPT}</script></body></html>`;
 }
 
+/** First-touch READY_TO_SEND emails that pass every send check now, with what would be sent. */
+function sendBatch(campaignId: number, sender: string) {
+  const deliveries = store.listEmailDeliveries();
+  return store.listCampaignOutreach(campaignId).flatMap((outreach) => {
+    if (outreach.status !== "READY_TO_SEND") return [];
+    if (deliveries.some((item) => item.outreachId === outreach.id && item.status !== "FAILED")) return [];
+    try { store.assertReadyToSend(outreach.id); } catch { return []; }
+    const contact = store.getContact(outreach.contactId)!;
+    const company = store.getCompany(contact.companyId)!;
+    const recipient = store.getContactRecipient(contact.id)!;
+    return [{ outreach, label: `${contact.name} · ${company.name}`, guessed: recipient.guessed,
+      guessBadge: guessVerificationBadge(recipient.verification, contact.guessedEmailVerificationDetail),
+      expected: { fromEmail: sender, toEmail: recipient.address, subject: outreach.subject, body: outreach.body } }];
+  });
+}
+
+function sendQueueStatus(campaignId: number): string {
+  const state = sendQueueState(campaignId);
+  if (!state) return "";
+  const done = `${state.sent.length} of ${state.total} sent`;
+  if (state.running) {
+    return `<div class="notice" data-sending><strong>Sending queue running:</strong> ${done}${state.current ? `; now sending to ${escapeHtml(state.current)}` : ""}. Emails go out ${Math.round(SEND_QUEUE_GAP_MS / 1000)}s apart; keep the dashboard running.</div>`;
+  }
+  return state.failed
+    ? `<div class="notice error"><strong>Sending queue stopped:</strong> ${done}. ${escapeHtml(state.failed.label)} failed: ${escapeHtml(state.failed.error)} ${state.remaining} email(s) were not sent and stay READY_TO_SEND.</div>`
+    : `<div class="notice"><strong>Sending queue finished:</strong> ${done}.</div>`;
+}
+
 function redirect(
   response: ServerResponse, path: string, message?: Record<string, string>, anchor?: string,
 ): void {
@@ -147,6 +176,7 @@ function campaignReturn(campaignId: number, action: string): { path: string; par
     return { path: `${path}/follow-ups`, params: { open: sentId }, anchor: `sent-${sentId}` };
   }
   if (draftId) return { path, params: { draftId }, anchor: `email-${draftId}` };
+  if (action === "outreach/send-all") return { path, params: {}, anchor: "draft-review" };
   if (action === "outreach/approve-all") return { path, params: {}, anchor: "draft-review" };
   if (action === "contacts/recheck-angles" || /^contacts\/\d+\/recheck-angle$/.test(action)) return { path, params: {}, anchor: "prospect-research" };
   if (/^contacts\/\d+\/email$/.test(action)) return { path, params: {}, anchor: "email-discovery" };
@@ -259,6 +289,7 @@ function campaignPage(campaign: Campaign, url: URL): string {
   const recoverable = store.listEmailRecoveryCandidates(campaign.id);
   const evidenceCandidates = store.listPatternEvidenceCandidates(campaign.id).length;
   const verifying = isCheckingGuesses(campaign.id);
+  const sending = isSending(campaign.id);
   const verifyStatus = renderEmailPipelineStatus(contacts, runs,
     { checking: verifying, lastCheck: lastGuessCheck(campaign.id) });
 
@@ -285,7 +316,7 @@ function campaignPage(campaign: Campaign, url: URL): string {
 
   const runRows = runs.map((run) => `<details${run.status === "RUNNING" ? " open" : ""}><summary>${escapeHtml(runLabel(run))} <span class="badge ${run.status}">${humanize(run.status)}</span></summary>${run.error ? `<div class="notice error">${escapeHtml(run.error)}</div>` : ""}<pre>${escapeHtml(run.output || (run.status === "RUNNING" ? "Starting Codex…" : "No output captured."))}</pre></details>`).join("");
 
-  return layout(campaign.name, `${campaignHeader(campaign, url, "pipeline")}<div class="steps"><div class="step"><strong>${companies.length} companies</strong>${approvedCompanies} approved</div><div class="step"><strong>${contacts.length} contacts</strong>${approvedContacts} approved</div><div class="step"><strong>${emailComplete} email checks</strong>${contactsAwaitingEmail} approved contact(s) awaiting discovery</div></div><div class="grid"><section class="card span12" id="companies"><div class="cardhead"><div><span class="eyebrow">Stage 1</span><h2>Company discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/company-discovery" class="inline"><input name="targetCount" type="number" min="1" max="25" value="5" style="width:70px" aria-label="Target count"><button ${isRunning ? "disabled" : ""}>${companies.length ? "Find more" : "Run discovery"}</button></form></div>${companies.length ? `<form method="post" action="/campaigns/${campaign.id}/companies/review"><div class="actions"><button type="button" class="secondary" data-select>Select all</button><button name="decision" value="APPROVED">Approve selected</button><button class="danger" name="decision" value="REJECTED">Reject selected</button></div><div class="tablewrap"><table><thead><tr><th></th><th>Company</th><th>Fit</th><th>Score</th><th>Why ConvoKit</th><th>Signal</th><th>Status</th></tr></thead><tbody>${companyRows}</tbody></table></div></form>` : '<div class="empty">No companies stored yet. Run discovery to populate this stage.</div>'}</section><section class="card span12" id="contacts"><div class="cardhead"><div><span class="eyebrow">Stage 2</span><h2>Contact discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/contact-discovery"><button ${isRunning || approvedCompanies === 0 ? "disabled" : ""}>Run contact discovery</button></form></div>${contacts.length ? `<form method="post" action="/campaigns/${campaign.id}/contacts/review"><div class="actions"><button type="button" class="secondary" data-select>Select all</button><button name="decision" value="APPROVED">Approve selected</button><button class="danger" name="decision" value="REJECTED">Reject selected</button></div><div class="tablewrap"><table><thead><tr><th></th><th>Contact</th><th>Company</th><th>Role / score</th><th>Evidence</th><th>Email</th><th>Status</th></tr></thead><tbody>${contactRows}</tbody></table></div></form>` : `<div class="empty">${approvedCompanies ? "Approved companies are ready for contact discovery." : "Approve companies to unlock contact discovery."}</div>`}</section><section class="card span8" id="email-discovery"><div class="cardhead"><div><span class="eyebrow">Stage 3</span><h2>Email discovery</h2></div><div class="actions"><form method="post" action="/campaigns/${campaign.id}/workflows/email-discovery"><button ${isRunning || contactsAwaitingEmail === 0 ? "disabled" : ""}>Find public emails</button></form><form method="post" action="/campaigns/${campaign.id}/emails/verify-guesses"><button class="secondary" ${verifying || isRunning || uncheckedGuesses + inconclusiveGuesses === 0 ? "disabled" : ""}>${smtpLabel}</button></form><form method="post" action="/campaigns/${campaign.id}/emails/pattern-evidence"><button class="secondary" ${verifying || isRunning || evidenceCandidates === 0 ? "disabled" : ""}>Find pattern evidence (${evidenceCandidates})</button></form><form method="post" action="/campaigns/${campaign.id}/emails/treg-recovery"><button class="secondary" ${verifying || isRunning || recoverable.length === 0 ? "disabled" : ""}>Recover with Treg (${recoverable.length})</button></form></div></div><p class="muted">Only approved contacts with an unknown email status are checked. Inferred addresses are never stored as verified.</p><p class="muted">After email discovery, the free SMTP check runs automatically: it asks the mail server which guessed pattern exists, without sending mail, then prospect research starts. Publicly listed and verified emails are never probed, and a valid result keeps the address labelled as a guess. Find pattern evidence (free) searches public pages for a real same-domain address that confirms the pattern. Treg (paid) runs only when you click Recover with Treg, once per contact whose guess was invalid, catch-all, or inconclusive.</p>${verifyStatus}${renderEmailResults(companies, contacts, research, campaign.id)}</section><aside class="card span4"><span class="eyebrow">Safety gates</span><h2 style="margin-top:5px">Human approval stays required</h2><p class="muted">Research may run automatically. Company, contact, and future email-draft approvals remain manual.</p></aside>${renderProspectStages(store, campaign.id, Number(url.searchParams.get("draftId")) || undefined)}<section class="card span12" id="runs"><div class="cardhead"><div><span class="eyebrow">Activity</span><h2>Workflow runs</h2></div>${isRunning ? '<span class="badge RUNNING">Refreshing every 3s</span>' : ""}</div>${runRows || '<div class="empty">No research runs yet.</div>'}</section></div>`, { refreshing: isRunning || verifying });
+  return layout(campaign.name, `${campaignHeader(campaign, url, "pipeline")}<div class="steps"><div class="step"><strong>${companies.length} companies</strong>${approvedCompanies} approved</div><div class="step"><strong>${contacts.length} contacts</strong>${approvedContacts} approved</div><div class="step"><strong>${emailComplete} email checks</strong>${contactsAwaitingEmail} approved contact(s) awaiting discovery</div></div><div class="grid"><section class="card span12" id="companies"><div class="cardhead"><div><span class="eyebrow">Stage 1</span><h2>Company discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/company-discovery" class="inline"><input name="targetCount" type="number" min="1" max="25" value="5" style="width:70px" aria-label="Target count"><button ${isRunning ? "disabled" : ""}>${companies.length ? "Find more" : "Run discovery"}</button></form></div>${companies.length ? `<form method="post" action="/campaigns/${campaign.id}/companies/review"><div class="actions"><button type="button" class="secondary" data-select>Select all</button><button name="decision" value="APPROVED">Approve selected</button><button class="danger" name="decision" value="REJECTED">Reject selected</button></div><div class="tablewrap"><table><thead><tr><th></th><th>Company</th><th>Fit</th><th>Score</th><th>Why ConvoKit</th><th>Signal</th><th>Status</th></tr></thead><tbody>${companyRows}</tbody></table></div></form>` : '<div class="empty">No companies stored yet. Run discovery to populate this stage.</div>'}</section><section class="card span12" id="contacts"><div class="cardhead"><div><span class="eyebrow">Stage 2</span><h2>Contact discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/contact-discovery"><button ${isRunning || approvedCompanies === 0 ? "disabled" : ""}>Run contact discovery</button></form></div>${contacts.length ? `<form method="post" action="/campaigns/${campaign.id}/contacts/review"><div class="actions"><button type="button" class="secondary" data-select>Select all</button><button name="decision" value="APPROVED">Approve selected</button><button class="danger" name="decision" value="REJECTED">Reject selected</button></div><div class="tablewrap"><table><thead><tr><th></th><th>Contact</th><th>Company</th><th>Role / score</th><th>Evidence</th><th>Email</th><th>Status</th></tr></thead><tbody>${contactRows}</tbody></table></div></form>` : `<div class="empty">${approvedCompanies ? "Approved companies are ready for contact discovery." : "Approve companies to unlock contact discovery."}</div>`}</section><section class="card span8" id="email-discovery"><div class="cardhead"><div><span class="eyebrow">Stage 3</span><h2>Email discovery</h2></div><div class="actions"><form method="post" action="/campaigns/${campaign.id}/workflows/email-discovery"><button ${isRunning || contactsAwaitingEmail === 0 ? "disabled" : ""}>Find public emails</button></form><form method="post" action="/campaigns/${campaign.id}/emails/verify-guesses"><button class="secondary" ${verifying || isRunning || uncheckedGuesses + inconclusiveGuesses === 0 ? "disabled" : ""}>${smtpLabel}</button></form><form method="post" action="/campaigns/${campaign.id}/emails/pattern-evidence"><button class="secondary" ${verifying || isRunning || evidenceCandidates === 0 ? "disabled" : ""}>Find pattern evidence (${evidenceCandidates})</button></form><form method="post" action="/campaigns/${campaign.id}/emails/treg-recovery"><button class="secondary" ${verifying || isRunning || recoverable.length === 0 ? "disabled" : ""}>Recover with Treg (${recoverable.length})</button></form></div></div><p class="muted">Only approved contacts with an unknown email status are checked. Inferred addresses are never stored as verified.</p><p class="muted">After email discovery, the free SMTP check runs automatically: it asks the mail server which guessed pattern exists, without sending mail, then prospect research starts. Publicly listed and verified emails are never probed, and a valid result keeps the address labelled as a guess. Find pattern evidence (free) searches public pages for a real same-domain address that confirms the pattern. Treg (paid) runs only when you click Recover with Treg, once per contact whose guess was invalid, catch-all, or inconclusive.</p>${verifyStatus}${renderEmailResults(companies, contacts, research, campaign.id)}</section><aside class="card span4"><span class="eyebrow">Safety gates</span><h2 style="margin-top:5px">Human approval stays required</h2><p class="muted">Research may run automatically. Company, contact, and future email-draft approvals remain manual.</p></aside>${renderProspectStages(store, campaign.id, Number(url.searchParams.get("draftId")) || undefined, sendQueueStatus(campaign.id))}<section class="card span12" id="runs"><div class="cardhead"><div><span class="eyebrow">Activity</span><h2>Workflow runs</h2></div>${isRunning ? '<span class="badge RUNNING">Refreshing every 3s</span>' : ""}</div>${runRows || '<div class="empty">No research runs yet.</div>'}</section></div>`, { refreshing: isRunning || verifying || sending });
 }
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -377,6 +408,21 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         : await mcpEmail.finishAuthorization(url.searchParams.get("code") ?? "", url.searchParams.get("state") ?? "", cookieState);
       redirect(response, "/gmail", { notice: `Connected ${email} to ${provider.label}.` }); return;
     } catch (error) { redirect(response, "/gmail", { error: messageOf(error) }); return; }
+  }
+
+  const sendAllPreview = url.pathname.match(/^\/campaigns\/(\d+)\/send-all$/);
+  if (request.method === "GET" && sendAllPreview) {
+    const campaignId = Number(sendAllPreview[1]);
+    if (!store.getCampaign(campaignId)) throw new WorkflowError("Campaign not found");
+    const sender = emailTransport.connectedEmail();
+    if (!sender) { redirect(response, "/gmail", { error: `Configure ${emailTransport.label} before sending approved emails` }); return; }
+    if (isSending(campaignId)) throw new WorkflowError("A send queue is already running for this campaign");
+    const batch = sendBatch(campaignId, sender);
+    if (batch.length === 0) throw new WorkflowError("No READY_TO_SEND emails can be sent right now");
+    const guessed = batch.filter(({ guessed }) => guessed).length;
+    const items = batch.map(({ outreach, label, expected, guessed, guessBadge }) => `<details class="email-draft"><summary>${escapeHtml(label)} · <strong>${escapeHtml(expected.toEmail)}</strong>${guessed ? ` <span class="badge UNKNOWN">Guessed · unverified</span> ${guessBadge}` : ""} · ${escapeHtml(expected.subject)}</summary><pre class="email-preview">${escapeHtml(expected.body)}</pre></details><input type="hidden" name="ids" value="${outreach.id}"><input type="hidden" name="sig-${outreach.id}" value="${signature("outreach", outreach.id, expected)}">`).join("");
+    const gap = Math.round(SEND_QUEUE_GAP_MS / 1000);
+    send(response, 200, layout("Confirm sending all", `<a href="/campaigns/${campaignId}#draft-review">← Emails</a><section class="card" style="margin-top:18px"><h1>Confirm sending ${batch.length} email(s)</h1><p><strong>From:</strong> ${escapeHtml(sender)}</p>${guessed ? `<div class="notice error"><strong>Warning:</strong> ${guessed} of these go to guessed, unverified addresses. They may bounce or reach someone else.</div>` : ""}<p class="muted">Expand any email to read it. They are sent one after another, ${gap}s apart. Each is re-checked just before sending; if its approval, recipient, or content changed, or a send fails, the queue stops and the rest stay READY_TO_SEND.</p><form method="post" action="/campaigns/${campaignId}/outreach/send-all">${items}<div class="notice">This sends real emails to these prospects. Sending cannot be undone by this dashboard.</div><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending each exact approved email above to its recipient${guessed ? ", knowing some addresses are guessed and unverified" : ""}.</label><button>Send ${batch.length} email(s)</button></form></section>`)); return;
   }
 
   const sendPreview = url.pathname.match(/^\/campaigns\/(\d+)\/outreach\/(\d+)\/send$/);
@@ -509,6 +555,34 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }); return;
     }
 
+    if (action === "outreach/send-all") {
+      const sender = emailTransport.connectedEmail();
+      if (!sender || form.get("confirm") !== "yes") throw new WorkflowError("Confirm sending to start the queue");
+      if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {
+        throw new WorkflowError("Wait for the active workflow to finish before sending");
+      }
+      const confirmed = new Map(sendBatch(campaignId, sender).map((item) => [item.outreach.id, item]));
+      const ids = form.getAll("ids").map((value) => requirePositiveId(value, "email ID"));
+      // Every email must still match exactly what the confirmation page showed.
+      const queue = ids.map((id) => {
+        const item = confirmed.get(id);
+        if (!item || !validSignature(form.get(`sig-${id}`), signature("outreach", id, item.expected))) {
+          throw new WorkflowError("Send confirmation expired or a recipient/content changed. Review the emails and confirm again.");
+        }
+        return item;
+      });
+      if (queue.length === 0) throw new WorkflowError("No emails were confirmed");
+      void startSendQueue(campaignId, queue.map(({ outreach, label }) => ({ outreachId: outreach.id, label })),
+        async (outreachId) => {
+          const item = sendBatch(campaignId, sender).find(({ outreach }) => outreach.id === outreachId);
+          const original = confirmed.get(outreachId)!;
+          if (!item || JSON.stringify(item.expected) !== JSON.stringify(original.expected)) {
+            throw new Error("Its approval, recipient, or content changed after confirmation; review it again");
+          }
+          await emailSending.sendApproved(outreachId, item.expected);
+        });
+      back({ notice: `Sending ${queue.length} email(s) one after another, ${Math.round(SEND_QUEUE_GAP_MS / 1000)}s apart. Progress is shown under Emails.` }); return;
+    }
     if (action === "outreach/approve-all") {
       if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {
         throw new WorkflowError("Wait for the active workflow to finish before reviewing drafts");
