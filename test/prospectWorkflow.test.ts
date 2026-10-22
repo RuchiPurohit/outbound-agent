@@ -155,8 +155,20 @@ describe("Prospect workflow", () => {
       assert.match(renderProspectStages(store, campaign.id),
         new RegExp(`formaction="/campaigns/${campaign.id}/contacts/${contact.id}/recheck-angle"`));
 
-      // Recheck clears only the NO_SIGNAL result, so research can run again.
-      store.resetNoSignalResearch(contact.id);
+      // Recheck clears the NO_SIGNAL result and NO_SIGNAL colleagues at the same company.
+      const colleague = store.createContact({ companyId: contact.companyId, name: "Sam Lee", title: "VP Engineering" });
+      store.reviewContact(colleague.id, "APPROVED");
+      store.recordEmailDiscovery({ contactId: colleague.id, emailStatus: "PUBLICLY_LISTED",
+        email: "sam@example.com", sourceUrl: "https://example.com/team" });
+      store.saveProspectResearch({ contactId: colleague.id, signals: [], notes: "No useful signal" });
+      const html = renderProspectStages(store, campaign.id);
+      assert.match(html, new RegExp(`name="recheckIds" value="${colleague.id}"`));
+      assert.match(html, /formaction="\/campaigns\/\d+\/contacts\/recheck-angles"/);
+      // Selecting both colleagues resets each once.
+      assert.deepEqual(store.resetNoSignalResearchMany([contact.id, colleague.id]).map(({ id }) => id).sort(),
+        [contact.id, colleague.id].sort());
+      assert.equal(store.getProspectResearch(colleague.id), undefined);
+      assert.match(buildPrompt({ campaignId: campaign.id, kind: "PROSPECT_RESEARCH" }), /colleagues at the same company/);
       assert.equal(store.getProspectResearch(contact.id), undefined);
       assert.doesNotThrow(() => validateRequest(store, { campaignId: campaign.id, kind: "PROSPECT_RESEARCH" }));
       assert.throws(() => store.resetNoSignalResearch(contact.id), /Only a NO_SIGNAL/);

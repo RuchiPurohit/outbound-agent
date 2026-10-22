@@ -126,7 +126,7 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
 .toasts{position:fixed;top:16px;right:16px;left:16px;margin-left:auto;max-width:420px;z-index:10}.toasts .notice{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;margin:0 0 8px;box-shadow:var(--shadow)}.toasts .dismiss{background:none;color:inherit;padding:0 2px;font-size:16px;line-height:1}.badge.UNCERTAIN,.badge.SENDING,.badge.PREPARING{background:#f2e5c9;color:var(--amber)}
 .manual-email{border-top:0;padding:0;min-width:200px}.manual-email form{margin-top:10px}
 </style></head><body${options.refreshing ? " data-live-refresh" : ""}><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/gmail">Email connections</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
-<script>(function(){var u=new URL(location.href);if(u.searchParams.has('notice')||u.searchParams.has('error')){u.searchParams.delete('notice');u.searchParams.delete('error');history.replaceState(null,'',u.pathname+u.search+u.hash)}})();document.addEventListener('click',function(e){var b=e.target.closest('.toasts .dismiss');if(b)b.parentElement.remove();b=e.target.closest('[data-select]');if(b)b.closest('form').querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function(c){c.checked=true})});</script>
+<script>(function(){var u=new URL(location.href);if(u.searchParams.has('notice')||u.searchParams.has('error')){u.searchParams.delete('notice');u.searchParams.delete('error');history.replaceState(null,'',u.pathname+u.search+u.hash)}})();document.addEventListener('click',function(e){var b=e.target.closest('.toasts .dismiss');if(b)b.parentElement.remove();b=e.target.closest('[data-select]');if(b)b.closest('form').querySelectorAll('input[type="checkbox"]'+(b.dataset.select?'[name="'+b.dataset.select+'"]':'')+':not(:disabled)').forEach(function(c){c.checked=true})});</script>
 <script>${LIVE_REFRESH_SCRIPT}</script></body></html>`;
 }
 
@@ -148,7 +148,7 @@ function campaignReturn(campaignId: number, action: string): { path: string; par
   }
   if (draftId) return { path, params: { draftId }, anchor: `email-${draftId}` };
   if (action === "outreach/approve-all") return { path, params: {}, anchor: "draft-review" };
-  if (/^contacts\/\d+\/recheck-angle$/.test(action)) return { path, params: {}, anchor: "prospect-research" };
+  if (action === "contacts/recheck-angles" || /^contacts\/\d+\/recheck-angle$/.test(action)) return { path, params: {}, anchor: "prospect-research" };
   if (/^contacts\/\d+\/email$/.test(action)) return { path, params: {}, anchor: "email-discovery" };
   if (action === "workflows/follow-up-generation") return { path: `${path}/follow-ups`, params: {}, anchor: "generate-follow-ups" };
   const anchors: Record<string, string> = {
@@ -528,20 +528,26 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       back({ notice: `${approved} draft(s) approved and READY_TO_SEND. Nothing was sent.${skipped.length ? ` Skipped ${skipped.length}: ${skipped.join("; ")}` : ""}` }); return;
     }
     const recheck = action.match(/^contacts\/(\d+)\/recheck-angle$/);
-    if (recheck) {
-      const contact = store.getContact(Number(recheck[1]));
-      if (!contact || store.getCompany(contact.companyId)?.campaignId !== campaignId) {
-        throw new WorkflowError("Contact does not belong to this campaign");
-      }
+    if (recheck || action === "contacts/recheck-angles") {
+      const ids = recheck ? [Number(recheck[1])]
+        : [...new Set(form.getAll("recheckIds").map((value) => requirePositiveId(value, "contact ID")))];
+      if (ids.length === 0) throw new WorkflowError("Check at least one prospect to recheck");
       if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {
         throw new WorkflowError("Wait for the active workflow to finish before rechecking an angle");
       }
-      if (!store.listResearchEligibleProspects(campaignId).some(({ id }) => id === contact.id)) {
-        throw new WorkflowError("This contact is not eligible for prospect research (it needs a usable email)");
+      const eligible = new Set(store.listResearchEligibleProspects(campaignId).map(({ id }) => id));
+      for (const id of ids) {
+        const contact = store.getContact(id);
+        if (!contact || store.getCompany(contact.companyId)?.campaignId !== campaignId) {
+          throw new WorkflowError("Contact does not belong to this campaign");
+        }
+        if (!eligible.has(id)) {
+          throw new WorkflowError(`${contact.name} is not eligible for prospect research (it needs a usable email)`);
+        }
       }
-      store.resetNoSignalResearch(contact.id);
+      const reset = store.resetNoSignalResearchMany(ids);
       const run = launchWorkflow(db, { campaignId, kind: "PROSPECT_RESEARCH" });
-      back({ notice: `Rechecking the angle for ${contact.name} (run ${run.id}). The result stays separate from drafting until you select it.` }); return;
+      back({ notice: `Rechecking the angle for ${reset.length} prospect(s): ${reset.map(({ name }) => name).join(", ")} (run ${run.id}). Results stay separate from drafting until you select them.` }); return;
     }
     const manualEmail = action.match(/^contacts\/(\d+)\/email$/);
     if (manualEmail) {

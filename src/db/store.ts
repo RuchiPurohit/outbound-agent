@@ -733,15 +733,37 @@ export class OutboundStore {
   }
 
   /**
-   * Clears a NO_SIGNAL research result so the next prospect research run looks again.
-   * READY research and contacts with outreach are never reset. Sourced research records stay.
+   * Clears a NO_SIGNAL research result so the next prospect research run looks again, along
+   * with every other NO_SIGNAL colleague at the same company that has no outreach and is still
+   * research-eligible: an angle is mostly company-level. READY research is never reset, and
+   * sourced research records stay. Returns the contacts that were reset.
    */
-  resetNoSignalResearch(contactId: number): void {
-    this.db.transaction(() => {
+  resetNoSignalResearch(contactId: number): Contact[] {
+    return this.db.transaction(() => {
+      const contact = this.requireContact(contactId);
       const analysis = this.getProspectResearch(contactId);
       if (analysis?.status !== "NO_SIGNAL") throw new WorkflowError("Only a NO_SIGNAL research result can be rechecked");
       if (this.listOutreach(contactId).length > 0) throw new WorkflowError("This contact already has outreach");
-      this.db.prepare("DELETE FROM prospect_research WHERE contact_id = ?").run(contactId);
+      const company = this.requireCompany(contact.companyId);
+      const eligible = new Set(this.listResearchEligibleProspects(company.campaignId).map(({ id }) => id));
+      const reset = [contact, ...this.listContacts(company.id).filter((colleague) => colleague.id !== contact.id
+        && eligible.has(colleague.id) && this.getProspectResearch(colleague.id)?.status === "NO_SIGNAL"
+        && this.listOutreach(colleague.id).length === 0)];
+      for (const { id } of reset) this.db.prepare("DELETE FROM prospect_research WHERE contact_id = ?").run(id);
+      return reset;
+    })();
+  }
+
+  /** Rechecks several NO_SIGNAL prospects (and their NO_SIGNAL colleagues) in one transaction. */
+  resetNoSignalResearchMany(contactIds: number[]): Contact[] {
+    return this.db.transaction(() => {
+      const reset = new Map<number, Contact>();
+      for (const id of contactIds) {
+        // A colleague already reset alongside an earlier selection needs no second reset.
+        if (reset.has(id)) continue;
+        for (const contact of this.resetNoSignalResearch(id)) reset.set(contact.id, contact);
+      }
+      return [...reset.values()];
     })();
   }
 

@@ -110,6 +110,7 @@ function workflowPrompt(request: WorkflowRequest): string {
         "Never treat a guessed email as discovered, public, verified, or deliverable; downstream review must keep it clearly labelled.",
         "Use saveProspectResearch to persist at most three useful sourced signals, the strongest signal, a plausible pain hypothesis, and ConvoKit relevance.",
         "If no credible angle exists, save NO_SIGNAL using an empty signals array; never manufacture an angle.",
+        "Research colleagues at the same company together: if one has a credible company-level signal (a launch, community, or product workflow), reuse that sourced signal for the others and judge it against each person's own role; save NO_SIGNAL for a colleague only when the angle genuinely does not fit them.",
         "Do not generate emails. Stop for the user to select researched contacts in the dashboard checklist.",
       ].join(" ");
     case "EMAIL_GENERATION":

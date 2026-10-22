@@ -37,3 +37,14 @@ the strongest signal, pain hypothesis, and ConvoKit relevance. Do not generate
 emails, change approval states, modify application code, or send anything.
 Stop after research. The user must check researched contacts in the dashboard
 before any draft generation may start.
+
+## Colleagues at the same company
+
+Research contacts at the same company together. A launch, community, or product
+workflow is usually a company-level signal: when it gives one contact a credible
+angle, reuse the same sourced signal for each colleague and tailor the pain
+hypothesis and ConvoKit relevance to that person's role. Save `NO_SIGNAL` for a
+colleague only when the angle genuinely does not fit them, and say why in
+`notes`. The dashboard's Recheck angle button resets every `NO_SIGNAL`
+colleague at the company so they are researched again together.
+
