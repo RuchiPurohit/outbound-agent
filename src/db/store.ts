@@ -1,8 +1,9 @@
 import type { SqliteDatabase } from "./database.js";
 import { randomUUID } from "node:crypto";
+import { patternCandidates } from "../email/guessPatterns.js";
 import type {
   Campaign, CampaignStatus, ChatFeatureStatus, ChatImplementation, Company, CompanyScoreBreakdown,
-  Contact, EmailGuessConfidence, EmailGuessPattern, EmailStatus, Outreach, ResearchRecord,
+  Contact, EmailGuessConfidence, EmailGuessPattern, EmailRecoveryOutcome, EmailStatus, GuessVerification, Outreach, ResearchRecord,
   ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch, EmailDelivery,
 } from "./types.js";
 
@@ -62,16 +63,31 @@ function companyEmailDomain(value: string): string {
   return domain;
 }
 
-function checkedGuessedEmail(value: string, companyDomain: string): string {
+/** The domain company mailboxes live on: the sourced email domain, else the website domain. */
+export function mailDomainOf(company: Pick<Company, "domain" | "emailDomain">): string {
+  return company.emailDomain ?? company.domain.trim().toLowerCase().replace(/^www\./, "");
+}
+
+/** SMTP detail written when the mail domain cannot receive mail (see smtpVerifier). */
+const NO_MAIL_DETAIL = /has no MX records|does not accept mail \(null MX\)/;
+
+function checkedGuessedEmail(value: string, company: Pick<Company, "domain" | "emailDomain">): string {
   const email = value.trim().toLowerCase();
   const match = /^([a-z0-9]+(?:[._-][a-z0-9]+)*)@([a-z0-9.-]+)$/.exec(email);
-  if (!match || match[2] !== companyEmailDomain(companyDomain)) {
-    throw new WorkflowError("Guessed email must be a valid address on the company domain");
+  if (!match || match[2] !== companyEmailDomain(mailDomainOf(company))) {
+    throw new WorkflowError("Guessed email must be a valid address on the company domain (or its recorded email domain)");
   }
   return email;
 }
 
 export class WorkflowError extends Error {}
+
+export interface ContactRecipient {
+  address: string;
+  guessed: boolean;
+  /** SMTP verdict for a guessed address; null when sourced or not yet checked. */
+  verification: GuessVerification | null;
+}
 
 export class OutboundStore {
   public constructor(private readonly db: SqliteDatabase) {}
@@ -90,6 +106,16 @@ export class OutboundStore {
 
   listCampaigns(): Campaign[] {
     return (this.db.prepare("SELECT * FROM campaigns ORDER BY id").all() as Row[]).map(campaignFromRow);
+  }
+
+  updateCampaign(id: number, input: { name: string; segment: string }): Campaign {
+    this.requireCampaign(id);
+    const name = input.name.trim();
+    const segment = input.segment.trim();
+    if (!name || !segment) throw new WorkflowError("Campaign name and segment are required");
+    this.db.prepare("UPDATE campaigns SET name = ?, segment = ? WHERE id = ?")
+      .run(name, segment, id);
+    return this.getCampaign(id)!;
   }
 
   setCampaignStatus(id: number, status: CampaignStatus): Campaign {
@@ -330,16 +356,20 @@ export class OutboundStore {
 
       const found = input.emailStatus === "PUBLICLY_LISTED" || input.emailStatus === "VERIFIED";
       if (found && (!input.email || !input.sourceUrl)) {
-        throw new WorkflowError("A found email requires the exact address and a source URL");
+        throw new WorkflowError("A found email requires the exact address and an evidence URL");
       }
       if (!found && input.email) {
         throw new WorkflowError("EMAIL_NOT_FOUND cannot include an email address");
       }
+      // Re-recording EMAIL_NOT_FOUND changes nothing; keep the guess and its SMTP/recovery evidence.
+      if (!found && contact.emailStatus === "EMAIL_NOT_FOUND") return contact;
 
       this.db.prepare(`UPDATE contacts SET email = ?, email_status = ?,
         guessed_email = NULL, guessed_email_pattern = NULL,
         guessed_email_confidence = NULL, guessed_email_basis = NULL,
-        guessed_email_source_url = NULL WHERE id = ?`)
+        guessed_email_source_url = NULL, guessed_email_verification = NULL,
+        guessed_email_verification_detail = NULL, guessed_email_verified_at = NULL,
+        guessed_email_source = NULL, guessed_email_candidates_checked = NULL WHERE id = ?`)
         .run(found ? input.email : null, input.emailStatus, input.contactId);
 
       if (found) {
@@ -352,6 +382,48 @@ export class OutboundStore {
         });
       }
       return this.getContact(input.contactId)!;
+    })();
+  }
+
+  /**
+   * Stores an address the human found or verified from an external source. It replaces any
+   * guess and keeps a research record pointing at the source the human supplied.
+   */
+  recordManualEmail(input: {
+    contactId: number;
+    email: string;
+    emailStatus: "PUBLICLY_LISTED" | "VERIFIED";
+    sourceUrl: string;
+    note?: string;
+  }): Contact {
+    const email = input.email.trim().toLowerCase();
+    if (!/^[^\s@<>"]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(email)) {
+      throw new WorkflowError("Enter a valid email address");
+    }
+    if (input.emailStatus !== "PUBLICLY_LISTED" && input.emailStatus !== "VERIFIED") {
+      throw new WorkflowError("Choose whether the email is verified or publicly listed");
+    }
+    const sourceUrl = input.sourceUrl.trim();
+    if (!sourceUrl) throw new WorkflowError("A manual email requires the source URL where you found or verified it");
+    checkPublicUrl(sourceUrl, "Email source");
+    const note = input.note?.trim().slice(0, 1000);
+    return this.db.transaction(() => {
+      const contact = this.requireContact(input.contactId);
+      this.db.prepare(`UPDATE contacts SET email = ?, email_status = ?,
+        guessed_email = NULL, guessed_email_pattern = NULL,
+        guessed_email_confidence = NULL, guessed_email_basis = NULL,
+        guessed_email_source_url = NULL, guessed_email_verification = NULL,
+        guessed_email_verification_detail = NULL, guessed_email_verified_at = NULL,
+        guessed_email_source = NULL, guessed_email_candidates_checked = NULL WHERE id = ?`)
+        .run(email, input.emailStatus, contact.id);
+      this.createResearchRecord({
+        companyId: contact.companyId,
+        contactId: contact.id,
+        signal: `Professional business email ${input.emailStatus.toLowerCase()}: ${email}`,
+        sourceUrl,
+        notes: `Manually entered by the user${note ? `: ${note}` : ""}`,
+      });
+      return this.getContact(contact.id)!;
     })();
   }
 
@@ -371,7 +443,7 @@ export class OutboundStore {
       throw new WorkflowError("An email guess may only follow an EMAIL_NOT_FOUND result");
     }
     const company = this.requireCompany(contact.companyId);
-    const guessedEmail = checkedGuessedEmail(input.guessedEmail, company.domain);
+    const guessedEmail = checkedGuessedEmail(input.guessedEmail, company);
     const basis = input.basis.trim();
     if (!basis) throw new WorkflowError("An email guess requires a basis");
     const sourceUrl = input.sourceUrl?.trim() || null;
@@ -383,11 +455,228 @@ export class OutboundStore {
       throw new WorkflowError("A pattern source URL is only valid for PATTERN_SUPPORTED guesses");
     }
     this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_pattern = ?,
-      guessed_email_confidence = ?, guessed_email_basis = ?, guessed_email_source_url = ?
+      guessed_email_confidence = ?, guessed_email_basis = ?, guessed_email_source_url = ?,
+      guessed_email_verification = NULL, guessed_email_verification_detail = NULL,
+      guessed_email_verified_at = NULL, guessed_email_source = 'PATTERN',
+      guessed_email_candidates_checked = NULL
       WHERE id = ?`).run(
       guessedEmail, input.pattern, input.confidence, basis, sourceUrl, input.contactId,
     );
     return this.getContact(input.contactId)!;
+  }
+
+  /** Approved guesses in the campaign that have no conclusive SMTP verdict yet. */
+  listGuessesAwaitingVerification(campaignId: number, options: { includeInconclusive?: boolean } = {}): Contact[] {
+    return this.listCompanies({ campaignId, status: "APPROVED" })
+      .flatMap(({ id }) => this.listContacts(id))
+      .filter((contact) => contact.status === "APPROVED" && contact.emailStatus === "EMAIL_NOT_FOUND"
+        && !contact.email && !!contact.guessedEmail
+        && (contact.guessedEmailVerification === null
+          // INVALID from a single-guess check that predates multi-pattern probing: retry all patterns.
+          || (contact.guessedEmailVerification === "INVALID" && contact.guessedEmailSource === "PATTERN"
+            && contact.guessedEmailCandidatesChecked === null)
+          || (options.includeInconclusive === true && contact.guessedEmailVerification === "UNKNOWN")));
+  }
+
+  /**
+   * Stores an SMTP verdict on a guess. It annotates the guess only: the contact stays
+   * EMAIL_NOT_FOUND and the address never moves into contacts.email.
+   */
+  recordGuessVerification(input: {
+    contactId: number;
+    guessedEmail: string;
+    verdict: GuessVerification;
+    detail: string;
+    /** Another pattern the mail server accepted after rejecting the stored guess. */
+    replacement?: { email: string; pattern: EmailGuessPattern };
+    /** How many addresses were offered to the check (stored guess plus alternatives). */
+    candidatesChecked?: number;
+  }): Contact {
+    return this.db.transaction(() => {
+      const contact = this.requireContact(input.contactId);
+      if (contact.emailStatus !== "EMAIL_NOT_FOUND" || contact.email || !contact.guessedEmail) {
+        throw new WorkflowError("Only guessed emails for EMAIL_NOT_FOUND contacts can be SMTP-verified");
+      }
+      if (contact.guessedEmail.toLowerCase() !== input.guessedEmail.toLowerCase()) {
+        throw new WorkflowError("The guessed email changed during verification; verify it again");
+      }
+      if (input.replacement) {
+        if (contact.guessedEmailSource !== "PATTERN") {
+          throw new WorkflowError("Only pattern guesses can be replaced by another SMTP-checked pattern");
+        }
+        const company = this.requireCompany(contact.companyId);
+        const email = checkedGuessedEmail(input.replacement.email, company);
+        const basis = `SMTP check accepted the ${input.replacement.pattern} pattern after rejecting the stored guess `
+          + `${contact.guessedEmail} (${contact.guessedEmailPattern}). Earlier basis: ${contact.guessedEmailBasis}`;
+        this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_pattern = ?,
+          guessed_email_confidence = 'COMMON_PATTERN', guessed_email_basis = ?, guessed_email_source_url = NULL
+          WHERE id = ?`).run(email, input.replacement.pattern, basis, contact.id);
+      }
+      this.db.prepare(`UPDATE contacts SET guessed_email_verification = ?,
+        guessed_email_verification_detail = ?, guessed_email_verified_at = ?,
+        guessed_email_candidates_checked = ? WHERE id = ?`)
+        .run(input.verdict, input.detail.slice(0, 1000), now(), input.candidatesChecked ?? 1, input.contactId);
+      return this.getContact(input.contactId)!;
+    })();
+  }
+
+  /**
+   * Pattern guesses whose SMTP check was invalid, catch-all, or inconclusive and that have no
+   * recorded Treg outcome. Contacts with a VERIFIED, CATCH_ALL_CANDIDATE, or NOT_FOUND outcome
+   * are never recovered again. A contact whose recovery hit a provider error, or whose run
+   * ended without recording an outcome, is eligible again once no workflow is active.
+   */
+  listEmailRecoveryCandidates(campaignId: number): Contact[] {
+    const active = this.listWorkflowRuns(campaignId)
+      .some(({ status }) => status === "RUNNING" || status === "PENDING");
+    return this.listCompanies({ campaignId, status: "APPROVED" })
+      .flatMap(({ id }) => this.listContacts(id))
+      .filter((contact) => contact.status === "APPROVED" && contact.emailStatus === "EMAIL_NOT_FOUND"
+        && !contact.email && !!contact.guessedEmail && contact.guessedEmailSource === "PATTERN"
+        && contact.emailRecoveryOutcome === null && (contact.emailRecoveryStartedAt === null || !active)
+        && ["INVALID", "CATCH_ALL", "UNKNOWN"].includes(contact.guessedEmailVerification ?? ""));
+  }
+
+  /**
+   * Pattern guesses on domains where SMTP could not confirm the mailbox (catch-all, invalid,
+   * or inconclusive) that lack public pattern evidence and have never been searched for it.
+   * A guess whose domain cannot receive mail (no MX) is also a candidate once per company, so
+   * the search can find the domain staff actually use.
+   */
+  listPatternEvidenceCandidates(campaignId: number): Contact[] {
+    return this.listCompanies({ campaignId, status: "APPROVED" })
+      .flatMap((company) => this.listContacts(company.id)
+        .filter((contact) => contact.status === "APPROVED" && contact.emailStatus === "EMAIL_NOT_FOUND"
+          && !contact.email && !!contact.guessedEmail && contact.guessedEmailSource === "PATTERN"
+          && ["INVALID", "CATCH_ALL", "UNKNOWN"].includes(contact.guessedEmailVerification ?? "")
+          && ((contact.guessedEmailConfidence !== "PATTERN_SUPPORTED" && contact.patternEvidenceCheckedAt === null)
+            || (this.needsEmailDomainSearch(company, contact)))));
+  }
+
+  /** The guess's domain has no mail server and no other email domain has been searched for. */
+  private needsEmailDomainSearch(company: Company, contact: Contact): boolean {
+    return company.emailDomainCheckedAt === null && contact.guessedEmailVerification === "INVALID"
+      && NO_MAIL_DETAIL.test(contact.guessedEmailVerificationDetail ?? "");
+  }
+
+  /** Marks contacts as searched for pattern evidence so the free search runs once per contact. */
+  markPatternEvidenceStarted(campaignId: number, contactIds: number[]): void {
+    this.db.transaction(() => {
+      const candidates = new Map(this.listPatternEvidenceCandidates(campaignId).map((contact) => [contact.id, contact]));
+      for (const id of contactIds) {
+        const contact = candidates.get(id);
+        if (!contact) throw new WorkflowError(`Contact ${id} is not awaiting a pattern-evidence search`);
+        this.db.prepare("UPDATE contacts SET pattern_evidence_checked_at = ? WHERE id = ?").run(now(), id);
+        if (this.needsEmailDomainSearch(this.requireCompany(contact.companyId), contact)) {
+          this.db.prepare("UPDATE companies SET email_domain_checked_at = ? WHERE id = ?").run(now(), contact.companyId);
+        }
+      }
+    })();
+  }
+
+  /**
+   * Records the domain company staff use for email when it differs from the website domain,
+   * backed by a public page that shows an address on it. Pattern guesses on the old domain
+   * move to the same pattern on the new one and are queued for a fresh SMTP check.
+   */
+  recordCompanyEmailDomain(input: { companyId: number; emailDomain: string; sourceUrl: string; basis: string }): Company {
+    const emailDomain = companyEmailDomain(input.emailDomain);
+    const sourceUrl = input.sourceUrl.trim();
+    const basis = input.basis.trim();
+    if (!sourceUrl) throw new WorkflowError("An email domain requires a public source URL showing an address on it");
+    checkPublicUrl(sourceUrl, "Email domain source");
+    if (!basis) throw new WorkflowError("An email domain requires a basis naming the observed address");
+    if (/^(gmail|googlemail|yahoo|hotmail|outlook|live|icloud|me|aol|proton|protonmail|gmx)\./.test(emailDomain)) {
+      throw new WorkflowError("A personal email provider cannot be a company email domain");
+    }
+    return this.db.transaction(() => {
+      const company = this.requireCompany(input.companyId);
+      const previous = mailDomainOf(company);
+      const website = mailDomainOf({ ...company, emailDomain: null });
+      this.db.prepare(`UPDATE companies SET email_domain = ?, email_domain_source_url = ?, email_domain_basis = ?,
+        email_domain_checked_at = COALESCE(email_domain_checked_at, ?) WHERE id = ?`)
+        .run(emailDomain === website ? null : emailDomain, sourceUrl, basis.slice(0, 1000), now(), company.id);
+      if (previous === emailDomain) return this.getCompany(company.id)!;
+      for (const contact of this.listContacts(company.id)) {
+        if (contact.emailStatus !== "EMAIL_NOT_FOUND" || contact.email || !contact.guessedEmail
+          || contact.guessedEmailSource !== "PATTERN" || !contact.guessedEmail.endsWith(`@${previous}`)) continue;
+        const local = contact.guessedEmail.slice(0, -previous.length - 1);
+        const moved = patternCandidates(contact.name, emailDomain)
+          .find(({ pattern }) => pattern === contact.guessedEmailPattern)?.email ?? `${local}@${emailDomain}`;
+        this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_basis = ?,
+          guessed_email_verification = NULL, guessed_email_verification_detail = NULL,
+          guessed_email_verified_at = NULL, guessed_email_candidates_checked = NULL WHERE id = ?`)
+          .run(moved, `${contact.guessedEmailBasis ?? ""} Moved from ${previous} to the company's email domain ${emailDomain} (${sourceUrl}).`.trim(), contact.id);
+      }
+      return this.getCompany(company.id)!;
+    })();
+  }
+
+  /** Marks contacts as handed to Treg recovery before the workflow spends any credits. */
+  markEmailRecoveryStarted(campaignId: number, contactIds: number[]): void {
+    this.db.transaction(() => {
+      const allowed = new Set(this.listEmailRecoveryCandidates(campaignId).map(({ id }) => id));
+      for (const id of contactIds) {
+        if (!allowed.has(id)) throw new WorkflowError(`Contact ${id} is not awaiting Treg recovery`);
+        this.db.prepare(`UPDATE contacts SET email_recovery_started_at = ?, email_recovery_outcome = NULL,
+          email_recovery_notes = NULL, email_recovery_error = NULL WHERE id = ?`).run(now(), id);
+      }
+    })();
+  }
+
+  /**
+   * Records the Treg recovery outcome for a contact handed to recovery.
+   * VERIFIED requires an exact Treg `valid` verdict and promotes the address.
+   * CATCH_ALL_CANDIDATE replaces the pattern guess with Treg's found address, still as an
+   * unverified guess. NOT_FOUND keeps the existing guess and its SMTP evidence.
+   * PROVIDER_ERROR (credits, quota, outage) keeps the guess and requeues the contact.
+   */
+  recordEmailRecovery(input: {
+    contactId: number;
+    outcome: EmailRecoveryOutcome | "PROVIDER_ERROR";
+    email?: string;
+    sourceUrl?: string;
+    notes: string;
+  }): Contact {
+    return this.db.transaction(() => {
+      const contact = this.requireContact(input.contactId);
+      if (contact.status !== "APPROVED" || contact.emailStatus !== "EMAIL_NOT_FOUND"
+        || !contact.emailRecoveryStartedAt || contact.emailRecoveryOutcome !== null) {
+        throw new WorkflowError("Only approved EMAIL_NOT_FOUND contacts with a pending Treg recovery can record an outcome");
+      }
+      const notes = input.notes.trim();
+      if (!notes) throw new WorkflowError("Treg recovery requires provenance notes (call IDs, providers, verdict, cost)");
+      if (input.outcome === "PROVIDER_ERROR") {
+        if (input.email) throw new WorkflowError("PROVIDER_ERROR recovery cannot include an email address");
+        this.db.prepare(`UPDATE contacts SET email_recovery_started_at = NULL, email_recovery_error = ?
+          WHERE id = ?`).run(notes.slice(0, 1000), contact.id);
+        return this.getContact(contact.id)!;
+      }
+      if (input.outcome === "NOT_FOUND") {
+        if (input.email) throw new WorkflowError("NOT_FOUND recovery cannot include an email address");
+      } else {
+        if (!input.email || !input.sourceUrl) {
+          throw new WorkflowError("A Treg recovery result requires the exact address and the verifier audit URL");
+        }
+        checkPublicUrl(input.sourceUrl, "Treg verifier audit");
+      }
+      if (input.outcome === "VERIFIED") {
+        this.recordEmailDiscovery({ contactId: contact.id, emailStatus: "VERIFIED",
+          email: input.email, sourceUrl: input.sourceUrl, notes });
+      } else if (input.outcome === "CATCH_ALL_CANDIDATE") {
+        const company = this.requireCompany(contact.companyId);
+        const guessedEmail = checkedGuessedEmail(input.email!, company);
+        this.db.prepare(`UPDATE contacts SET guessed_email = ?, guessed_email_source = 'TREG_CATCH_ALL',
+          guessed_email_pattern = NULL, guessed_email_confidence = NULL, guessed_email_basis = ?,
+          guessed_email_source_url = ?, guessed_email_verification = 'CATCH_ALL',
+          guessed_email_verification_detail = 'Treg verifier returned catch_all; the mailbox cannot be confirmed',
+          guessed_email_verified_at = ? WHERE id = ?`)
+          .run(guessedEmail, notes, input.sourceUrl, now(), contact.id);
+      }
+      this.db.prepare(`UPDATE contacts SET email_recovery_outcome = ?, email_recovery_notes = ?,
+        email_recovery_error = NULL WHERE id = ?`).run(input.outcome, notes.slice(0, 4000), contact.id);
+      return this.getContact(contact.id)!;
+    })();
   }
 
   reviewContact(id: number, decision: Exclude<ReviewStatus, "DISCOVERED">): Contact {
@@ -443,6 +732,41 @@ export class OutboundStore {
     })();
   }
 
+  /**
+   * Clears a NO_SIGNAL research result so the next prospect research run looks again, along
+   * with every other NO_SIGNAL colleague at the same company that has no outreach and is still
+   * research-eligible: an angle is mostly company-level. READY research is never reset, and
+   * sourced research records stay. Returns the contacts that were reset.
+   */
+  resetNoSignalResearch(contactId: number): Contact[] {
+    return this.db.transaction(() => {
+      const contact = this.requireContact(contactId);
+      const analysis = this.getProspectResearch(contactId);
+      if (analysis?.status !== "NO_SIGNAL") throw new WorkflowError("Only a NO_SIGNAL research result can be rechecked");
+      if (this.listOutreach(contactId).length > 0) throw new WorkflowError("This contact already has outreach");
+      const company = this.requireCompany(contact.companyId);
+      const eligible = new Set(this.listResearchEligibleProspects(company.campaignId).map(({ id }) => id));
+      const reset = [contact, ...this.listContacts(company.id).filter((colleague) => colleague.id !== contact.id
+        && eligible.has(colleague.id) && this.getProspectResearch(colleague.id)?.status === "NO_SIGNAL"
+        && this.listOutreach(colleague.id).length === 0)];
+      for (const { id } of reset) this.db.prepare("DELETE FROM prospect_research WHERE contact_id = ?").run(id);
+      return reset;
+    })();
+  }
+
+  /** Rechecks several NO_SIGNAL prospects (and their NO_SIGNAL colleagues) in one transaction. */
+  resetNoSignalResearchMany(contactIds: number[]): Contact[] {
+    return this.db.transaction(() => {
+      const reset = new Map<number, Contact>();
+      for (const id of contactIds) {
+        // A colleague already reset alongside an earlier selection needs no second reset.
+        if (reset.has(id)) continue;
+        for (const contact of this.resetNoSignalResearch(id)) reset.set(contact.id, contact);
+      }
+      return [...reset.values()];
+    })();
+  }
+
   getProspectResearch(contactId: number): ProspectResearch | undefined {
     const row = this.db.prepare("SELECT * FROM prospect_research WHERE contact_id = ?")
       .get(contactId) as Row | undefined;
@@ -471,7 +795,7 @@ export class OutboundStore {
     return this.listEligibleProspects(campaignId);
   }
 
-  getContactRecipient(contactId: number): { address: string; guessed: boolean } | undefined {
+  getContactRecipient(contactId: number): ContactRecipient | undefined {
     return this.recipientFor(this.requireContact(contactId));
   }
 
@@ -875,18 +1199,24 @@ export class OutboundStore {
     return this.requireProspectEligible(contactId);
   }
 
-  private recipientFor(contact: Contact): { address: string; guessed: boolean } | undefined {
+  private recipientFor(contact: Contact): ContactRecipient | undefined {
     if (contact.email && ["PUBLICLY_LISTED", "VERIFIED"].includes(contact.emailStatus)) {
-      return { address: contact.email, guessed: false };
+      return { address: contact.email, guessed: false, verification: null };
     }
-    if (contact.emailStatus === "EMAIL_NOT_FOUND" && contact.guessedEmail) {
-      return { address: contact.guessedEmail, guessed: true };
+    // A mailbox the recipient's server rejected would only bounce, so it is not a recipient.
+    if (contact.emailStatus === "EMAIL_NOT_FOUND" && contact.guessedEmail
+      && contact.guessedEmailVerification !== "INVALID") {
+      return { address: contact.guessedEmail, guessed: true, verification: contact.guessedEmailVerification };
     }
     return undefined;
   }
 
-  private requireContactRecipient(contactId: number): { address: string; guessed: boolean } {
-    const recipient = this.getContactRecipient(contactId);
+  private requireContactRecipient(contactId: number): ContactRecipient {
+    const contact = this.requireContact(contactId);
+    const recipient = this.recipientFor(contact);
+    if (!recipient && contact.guessedEmailVerification === "INVALID") {
+      throw new WorkflowError("The guessed email was rejected by the recipient's mail server (SMTP invalid)");
+    }
     if (!recipient) {
       throw new WorkflowError("Prospect workflow requires a sourced or explicitly guessed business email");
     }
@@ -966,6 +1296,10 @@ function companyFromRow(row: Row): Company {
     chatImplementation: text(row, "chat_implementation") as Company["chatImplementation"],
     chatVendorName: nullableText(row, "chat_vendor_name"),
     chatImplementationSourceUrl: nullableText(row, "chat_implementation_source_url"),
+    emailDomain: nullableText(row, "email_domain"),
+    emailDomainSourceUrl: nullableText(row, "email_domain_source_url"),
+    emailDomainBasis: nullableText(row, "email_domain_basis"),
+    emailDomainCheckedAt: nullableText(row, "email_domain_checked_at"),
     status: text(row, "status") as Company["status"],
     createdAt: text(row, "created_at") };
 }
@@ -979,6 +1313,16 @@ function contactFromRow(row: Row): Contact {
     guessedEmailConfidence: nullableText(row, "guessed_email_confidence") as Contact["guessedEmailConfidence"],
     guessedEmailBasis: nullableText(row, "guessed_email_basis"),
     guessedEmailSourceUrl: nullableText(row, "guessed_email_source_url"),
+    guessedEmailVerification: nullableText(row, "guessed_email_verification") as Contact["guessedEmailVerification"],
+    guessedEmailVerificationDetail: nullableText(row, "guessed_email_verification_detail"),
+    guessedEmailVerifiedAt: nullableText(row, "guessed_email_verified_at"),
+    guessedEmailSource: nullableText(row, "guessed_email_source") as Contact["guessedEmailSource"],
+    emailRecoveryStartedAt: nullableText(row, "email_recovery_started_at"),
+    emailRecoveryOutcome: nullableText(row, "email_recovery_outcome") as Contact["emailRecoveryOutcome"],
+    emailRecoveryNotes: nullableText(row, "email_recovery_notes"),
+    emailRecoveryError: nullableText(row, "email_recovery_error"),
+    guessedEmailCandidatesChecked: nullableInteger(row, "guessed_email_candidates_checked"),
+    patternEvidenceCheckedAt: nullableText(row, "pattern_evidence_checked_at"),
     status: text(row, "status") as Contact["status"] };
 }
 function researchFromRow(row: Row): ResearchRecord {

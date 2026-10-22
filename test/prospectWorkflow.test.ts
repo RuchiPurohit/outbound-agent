@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import { openDatabase } from "../src/db/database.js";
 import { OutboundStore } from "../src/db/store.js";
 import { renderProspectStages } from "../src/web/prospectStages.js";
-import { buildPrompt, launchWorkflow, nextWorkflowRequest, validateRequest } from "../src/workflows/runner.js";
+import { buildPrompt, launchWorkflow, validateRequest } from "../src/workflows/runner.js";
 
 function fixture() {
   const db = openDatabase(":memory:");
@@ -56,6 +56,29 @@ describe("Prospect workflow", () => {
     } finally { db.close(); }
   });
 
+  it("allows targeted Treg recovery only for unsuccessful SMTP guesses", () => {
+    const { db, store, campaign, contact } = fixture();
+    try {
+      store.recordEmailDiscovery({ contactId: contact.id, emailStatus: "EMAIL_NOT_FOUND" });
+      store.recordEmailGuess({ contactId: contact.id, guessedEmail: "pat@example.com",
+        pattern: "firstname", confidence: "COMMON_PATTERN", basis: "Common pattern" });
+      store.recordGuessVerification({ contactId: contact.id, guessedEmail: "pat@example.com",
+        verdict: "CATCH_ALL", detail: "accepts all recipients" });
+      assert.doesNotThrow(() => validateRequest(store, {
+        campaignId: campaign.id, kind: "EMAIL_DISCOVERY", contactIds: [contact.id],
+      }));
+      const prompt = buildPrompt({ campaignId: campaign.id, kind: "EMAIL_DISCOVERY", contactIds: [contact.id] });
+      assert.match(prompt, /post-SMTP Treg email recovery/);
+      assert.match(prompt, new RegExp(`ONLY these contact IDs: \\[${contact.id}\\]`));
+      assert.match(prompt, /returns exactly valid/);
+      store.recordGuessVerification({ contactId: contact.id, guessedEmail: "pat@example.com",
+        verdict: "VALID", detail: "accepted" });
+      assert.throws(() => validateRequest(store, {
+        campaignId: campaign.id, kind: "EMAIL_DISCOVERY", contactIds: [contact.id],
+      }), /invalid, catch-all, or inconclusive/);
+    } finally { db.close(); }
+  });
+
   it("distinguishes research prerequisites, ready prospects, and research in progress", () => {
     const { db, store, campaign, email } = fixture();
     try {
@@ -99,7 +122,6 @@ describe("Prospect workflow", () => {
       });
       await waitForRuns(store, 2);
       assert.equal(store.listOutreach(contact.id).length, 0);
-      assert.equal(nextWorkflowRequest(store, { campaignId: campaign.id, kind: "PROSPECT_RESEARCH" }), undefined);
       launchWorkflow(db, { campaignId: campaign.id, kind: "EMAIL_GENERATION", contactIds: [contact.id] }, {
         resolveExecutable: () => "simulated-codex", spawnProcess: fakeSpawn,
       });
@@ -110,12 +132,11 @@ describe("Prospect workflow", () => {
       assert.equal(store.listOutreach(contact.id)[0]?.reviewedAt, null);
       assert.equal(store.listOutreach(contact.id)[0]?.sentAt, null);
       assert.equal(prompts.length, 3);
-      assert.equal(nextWorkflowRequest(store, { campaignId: campaign.id, kind: "EMAIL_GENERATION" }), undefined);
     } finally { db.close(); }
   });
 
   it("does not continue failed research or prospects without credible signals", async () => {
-    const { db, store, campaign, contact, email } = fixture();
+    const { db, store, campaign, contact, email, research } = fixture();
     try {
       email();
       const fakeSpawn = () => spawn(process.execPath, ["-e", "process.exit(1)"]);
@@ -126,12 +147,34 @@ describe("Prospect workflow", () => {
       assert.equal(store.listWorkflowRuns()[0]?.status, "FAILED");
       assert.equal(store.listOutreach(contact.id).length, 0);
       store.saveProspectResearch({ contactId: contact.id, signals: [], notes: "No useful signal" });
-      assert.equal(nextWorkflowRequest(store, { campaignId: campaign.id, kind: "PROSPECT_RESEARCH" }), undefined);
       assert.throws(() => validateRequest(store, { campaignId: campaign.id, kind: "EMAIL_GENERATION",
         contactIds: [contact.id] }), /Every selected prospect/);
       assert.match(renderProspectStages(store, campaign.id), /No credible angle/);
       assert.match(renderProspectStages(store, campaign.id),
         new RegExp(`name="contactIds" value="${contact.id}"[^>]*disabled`));
+      assert.match(renderProspectStages(store, campaign.id),
+        new RegExp(`formaction="/campaigns/${campaign.id}/contacts/${contact.id}/recheck-angle"`));
+
+      // Recheck clears the NO_SIGNAL result and NO_SIGNAL colleagues at the same company.
+      const colleague = store.createContact({ companyId: contact.companyId, name: "Sam Lee", title: "VP Engineering" });
+      store.reviewContact(colleague.id, "APPROVED");
+      store.recordEmailDiscovery({ contactId: colleague.id, emailStatus: "PUBLICLY_LISTED",
+        email: "sam@example.com", sourceUrl: "https://example.com/team" });
+      store.saveProspectResearch({ contactId: colleague.id, signals: [], notes: "No useful signal" });
+      const html = renderProspectStages(store, campaign.id);
+      assert.match(html, new RegExp(`name="recheckIds" value="${colleague.id}"`));
+      assert.match(html, /formaction="\/campaigns\/\d+\/contacts\/recheck-angles"/);
+      // Selecting both colleagues resets each once.
+      assert.deepEqual(store.resetNoSignalResearchMany([contact.id, colleague.id]).map(({ id }) => id).sort(),
+        [contact.id, colleague.id].sort());
+      assert.equal(store.getProspectResearch(colleague.id), undefined);
+      assert.match(buildPrompt({ campaignId: campaign.id, kind: "PROSPECT_RESEARCH" }), /colleagues at the same company/);
+      assert.equal(store.getProspectResearch(contact.id), undefined);
+      assert.doesNotThrow(() => validateRequest(store, { campaignId: campaign.id, kind: "PROSPECT_RESEARCH" }));
+      assert.throws(() => store.resetNoSignalResearch(contact.id), /Only a NO_SIGNAL/);
+      research();
+      assert.throws(() => store.resetNoSignalResearch(contact.id), /Only a NO_SIGNAL/);
+      assert.doesNotMatch(renderProspectStages(store, campaign.id), /recheck-angle/);
     } finally { db.close(); }
   });
 
@@ -147,10 +190,15 @@ describe("Prospect workflow", () => {
       assert.throws(() => validateRequest(store, { campaignId: other.id, kind: "DRAFT_REWRITE",
         outreachId: draft.id, feedback: "Shorter" }), /eligible DRAFT/);
       validateRequest(store, { campaignId: campaign.id, kind: "DRAFT_REWRITE", outreachId: draft.id, feedback: "Shorter" });
+      const pending = renderProspectStages(store, campaign.id);
+      assert.match(pending, new RegExp(`action="/campaigns/${campaign.id}/outreach/approve-all"`));
+      assert.match(pending, new RegExp(`name="ids" value="${draft.id}"`));
+      assert.match(pending, /Approve all drafts → Ready to send \(1\)/);
       store.reviewCompany(company.id, "REJECTED");
       assert.throws(() => store.approveOutreachForSending(draft.id), /currently APPROVED/);
       store.reviewCompany(company.id, "APPROVED");
       store.approveOutreachForSending(draft.id);
+      assert.doesNotMatch(renderProspectStages(store, campaign.id), /approve-all/);
       assert.throws(() => validateRequest(store, { campaignId: campaign.id, kind: "DRAFT_REWRITE",
         outreachId: draft.id, feedback: "Shorter" }), /eligible DRAFT/);
     } finally { db.close(); }
@@ -283,14 +331,20 @@ describe("Prospect workflow", () => {
     assert.match(generation, /Type A, Type B, automatic-qualifier, and LOW_FIT/);
     assert.match(generation, /first-party sources/);
     assert.match(generation, /one first-touch draft, not follow-ups/);
+    const emailDiscovery = buildPrompt({ campaignId: 2, kind: "EMAIL_DISCOVERY" });
+    assert.match(emailDiscovery, /Do not use Treg in this run/);
+    assert.doesNotMatch(emailDiscovery, /Use Treg first/);
+    const recovery = buildPrompt({ campaignId: 2, kind: "EMAIL_DISCOVERY", contactIds: [7] });
+    assert.match(recovery, /call IDs, providers, identity inputs, verdict, and actual costs/);
+    assert.match(recovery, /identity matches the approved contact/);
     assert.match(generation, /at least MEDIUM fit/);
     assert.match(generation, /docs\/PRODUCT.md/);
-    const discovery = buildPrompt({ campaignId: 2, kind: "COMPANY_DISCOVERY", targetCount: 5 });
-    assert.match(discovery, /automatic qualifiers/);
-    assert.match(discovery, /six-factor weighted rubric/);
-    assert.match(discovery, /scoreBreakdown/);
-    assert.match(discovery, /separate Observed and hypothesis clauses/);
-    assert.match(discovery, /docs\/PRODUCT.md/);
-    assert.match(discovery, /report the shortfall and rejected candidates/);
+    const companyDiscovery = buildPrompt({ campaignId: 2, kind: "COMPANY_DISCOVERY", targetCount: 5 });
+    assert.match(companyDiscovery, /automatic qualifiers/);
+    assert.match(companyDiscovery, /six-factor weighted rubric/);
+    assert.match(companyDiscovery, /scoreBreakdown/);
+    assert.match(companyDiscovery, /separate Observed and hypothesis clauses/);
+    assert.match(companyDiscovery, /docs\/PRODUCT.md/);
+    assert.match(companyDiscovery, /report the shortfall and rejected candidates/);
   });
 });

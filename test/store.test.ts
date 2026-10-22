@@ -55,6 +55,24 @@ describe("OutboundStore", () => {
     assert.equal(company.chatFeatureSourceUrl, null);
   });
 
+  it("edits campaign metadata without changing its identity, status, or companies", () => {
+    const { campaign, company } = campaignAndCompany();
+    store.setCampaignStatus(campaign.id, "ACTIVE");
+
+    const updated = store.updateCampaign(campaign.id, {
+      name: "  Marketplaces · North America  ",
+      segment: "  Buyer and seller marketplaces  ",
+    });
+
+    assert.equal(updated.id, campaign.id);
+    assert.equal(updated.name, "Marketplaces · North America");
+    assert.equal(updated.segment, "Buyer and seller marketplaces");
+    assert.equal(updated.status, "ACTIVE");
+    assert.equal(store.getCompany(company.id)?.campaignId, campaign.id);
+    assert.throws(() => store.updateCampaign(campaign.id, { name: " ", segment: "SaaS" }),
+      /name and segment are required/);
+  });
+
   it("stores sourced chat-feature findings without claiming absence", () => {
     const campaign = store.createCampaign({ name: "Chat check", segment: "SaaS" });
     const present = store.createCompany({ campaignId: campaign.id, name: "Chat Co",
@@ -123,7 +141,7 @@ describe("OutboundStore", () => {
     diskDb.close();
     const reopenedDb = openDatabase(filename);
     assert.equal(new OutboundStore(reopenedDb).getCampaign(campaign.id)?.name, "Disk campaign");
-    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 13);
+    assert.equal(reopenedDb.pragma("user_version", { simple: true }), 18);
     reopenedDb.close();
     rmSync(directory, { recursive: true });
   });
@@ -180,7 +198,7 @@ describe("OutboundStore", () => {
       contactId: contact.id,
       emailStatus: "PUBLICLY_LISTED",
       email: "target@example.com",
-    }), /source URL/);
+    }), /evidence URL/);
 
     const updated = store.recordEmailDiscovery({
       contactId: contact.id,
@@ -191,6 +209,18 @@ describe("OutboundStore", () => {
     assert.equal(updated.email, "target@example.com");
     assert.equal(updated.emailStatus, "PUBLICLY_LISTED");
     assert.equal(store.listResearch(company.id).at(-1)?.sourceUrl, "https://example.com/team");
+
+    const tregContact = store.createContact({ companyId: company.id, name: "Treg Target" });
+    store.reviewContact(tregContact.id, "APPROVED");
+    const tregVerified = store.recordEmailDiscovery({
+      contactId: tregContact.id,
+      emailStatus: "VERIFIED",
+      email: "verified@example.com",
+      sourceUrl: "https://treg.to/calls/call_123",
+      notes: "Treg finder call call_122; verifier call call_123; verdict valid",
+    });
+    assert.equal(tregVerified.emailStatus, "VERIFIED");
+    assert.equal(store.listResearch(company.id).at(-1)?.sourceUrl, "https://treg.to/calls/call_123");
   });
 
   it("stores EMAIL_NOT_FOUND without an address", () => {

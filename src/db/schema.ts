@@ -422,4 +422,35 @@ export const migrations: readonly string[] = [
     ALTER TABLE email_deliveries ADD COLUMN sent_folder TEXT;
     ALTER TABLE email_deliveries ADD COLUMN sent_uid INTEGER CHECK (sent_uid IS NULL OR sent_uid > 0);
   `,
+  `
+    ALTER TABLE contacts ADD COLUMN guessed_email_verification TEXT
+      CHECK (guessed_email_verification IS NULL OR guessed_email_verification IN
+        ('VALID', 'INVALID', 'CATCH_ALL', 'UNKNOWN'));
+    ALTER TABLE contacts ADD COLUMN guessed_email_verification_detail TEXT;
+    ALTER TABLE contacts ADD COLUMN guessed_email_verified_at TEXT;
+  `,
+  `
+    ALTER TABLE contacts ADD COLUMN guessed_email_source TEXT
+      CHECK (guessed_email_source IS NULL OR guessed_email_source IN ('PATTERN', 'TREG_CATCH_ALL'));
+    UPDATE contacts SET guessed_email_source = 'PATTERN' WHERE guessed_email IS NOT NULL;
+    ALTER TABLE contacts ADD COLUMN email_recovery_started_at TEXT;
+    ALTER TABLE contacts ADD COLUMN email_recovery_outcome TEXT
+      CHECK (email_recovery_outcome IS NULL OR email_recovery_outcome IN
+        ('VERIFIED', 'CATCH_ALL_CANDIDATE', 'NOT_FOUND'));
+    ALTER TABLE contacts ADD COLUMN email_recovery_notes TEXT;
+  `,
+  `
+    ALTER TABLE contacts ADD COLUMN email_recovery_error TEXT;
+  `,
+  `
+    ALTER TABLE contacts ADD COLUMN guessed_email_candidates_checked INTEGER
+      CHECK (guessed_email_candidates_checked IS NULL OR guessed_email_candidates_checked > 0);
+    ALTER TABLE contacts ADD COLUMN pattern_evidence_checked_at TEXT;
+  `,
+  `
+    ALTER TABLE companies ADD COLUMN email_domain TEXT;
+    ALTER TABLE companies ADD COLUMN email_domain_source_url TEXT;
+    ALTER TABLE companies ADD COLUMN email_domain_basis TEXT;
+    ALTER TABLE companies ADD COLUMN email_domain_checked_at TEXT;
+  `,
 ];

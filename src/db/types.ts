@@ -14,6 +14,12 @@ export type EmailStatus = "UNKNOWN" | "PUBLICLY_LISTED" | "VERIFIED" | "EMAIL_NO
 export type EmailGuessConfidence = "PATTERN_SUPPORTED" | "COMMON_PATTERN" | "AMBIGUOUS";
 export type EmailGuessPattern = "firstname" | "firstname.lastname" | "firstnamelastname"
   | "firstinitiallastname" | "firstname_lastname";
+/** Self-hosted SMTP mailbox check of a guessed address. Never promotes the guess to VERIFIED. */
+export type GuessVerification = "VALID" | "INVALID" | "CATCH_ALL" | "UNKNOWN";
+/** PATTERN: inferred locally. TREG_CATCH_ALL: Treg finder result its verifier could only call catch_all. */
+export type GuessSource = "PATTERN" | "TREG_CATCH_ALL";
+/** Outcome of the one-time Treg recovery after an unsuccessful SMTP check of a guess. */
+export type EmailRecoveryOutcome = "VERIFIED" | "CATCH_ALL_CANDIDATE" | "NOT_FOUND";
 export type OutreachStatus = "DRAFT" | "APPROVED" | "READY_TO_SEND" | "SENT" | "REPLIED" | "REJECTED";
 export type WorkflowRunKind = "COMPANY_DISCOVERY" | "CONTACT_DISCOVERY" | "EMAIL_DISCOVERY"
   | "PROSPECT_RESEARCH" | "EMAIL_GENERATION" | "DRAFT_REWRITE" | "FOLLOW_UP_GENERATION";
@@ -48,6 +54,12 @@ export interface Company {
   chatImplementation: ChatImplementation;
   chatVendorName: string | null;
   chatImplementationSourceUrl: string | null;
+  /** Mail domain staff use when it differs from the website domain; null means `domain`. */
+  emailDomain: string | null;
+  emailDomainSourceUrl: string | null;
+  emailDomainBasis: string | null;
+  /** When a search for the real mail domain started (website domain has no MX); runs once. */
+  emailDomainCheckedAt: string | null;
   status: ReviewStatus;
   createdAt: string;
 }
@@ -67,6 +79,19 @@ export interface Contact {
   guessedEmailConfidence: EmailGuessConfidence | null;
   guessedEmailBasis: string | null;
   guessedEmailSourceUrl: string | null;
+  guessedEmailVerification: GuessVerification | null;
+  guessedEmailVerificationDetail: string | null;
+  guessedEmailVerifiedAt: string | null;
+  guessedEmailSource: GuessSource | null;
+  emailRecoveryStartedAt: string | null;
+  emailRecoveryOutcome: EmailRecoveryOutcome | null;
+  emailRecoveryNotes: string | null;
+  /** Last Treg provider error (credits, quota, outage); the contact is queued for retry. */
+  emailRecoveryError: string | null;
+  /** Addresses offered to the last SMTP check; null for checks that predate multi-pattern probing. */
+  guessedEmailCandidatesChecked: number | null;
+  /** When the one-time public pattern-evidence search was started for this contact. */
+  patternEvidenceCheckedAt: string | null;
   status: ReviewStatus;
 }
 

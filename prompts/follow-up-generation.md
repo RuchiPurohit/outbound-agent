@@ -22,7 +22,7 @@ Never expand the selection to other sent emails.
      information exists, restate the original workflow more concretely rather
      than inventing anything.
    - Prefer 70–100 words and never exceed 130.
-   - Start with `Hi <first name>,` and end with `Ruchi` and `convokit.app` on
+   - Start with `Hi <first name>,` and end with `Ruchi` and `https://convokit.app/` on
      separate lines. Keep the low-friction 10-minute call invitation.
    - Never claim or imply that the recipient read, opened, or ignored the first
      email. Do not say "just checking in", "bumping this", or "following up on

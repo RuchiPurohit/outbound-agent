@@ -5,12 +5,15 @@ import { config } from "dotenv";
 import { openDatabase } from "../db/database.js";
 import { OutboundStore, WorkflowError } from "../db/store.js";
 import type { Campaign, ResearchRecord, WorkflowRun } from "../db/types.js";
-import { launchWorkflow } from "../workflows/runner.js";
-import { renderEmailResults } from "./emailResults.js";
+import {
+  isCheckingGuesses, lastGuessCheck, launchEmailRecovery, launchPatternEvidence, launchWorkflow, startGuessCheck,
+} from "../workflows/runner.js";
+import { guessVerificationBadge, renderEmailPipelineStatus, renderEmailResults } from "./emailResults.js";
 import { renderProspectStages } from "./prospectStages.js";
 import { countDueFollowUps, renderFollowUps } from "./followUps.js";
 import { FileTokenStore, GmailClient } from "../gmail/client.js";
 import { EmailSending } from "../gmail/sending.js";
+import { isSending, SEND_QUEUE_GAP_MS, sendQueueState, startSendQueue } from "../gmail/sendQueue.js";
 import { renderGmailSettings } from "./gmailSettings.js";
 import type { EmailTransport } from "../email/transport.js";
 import { FileMcpTokenStore, McpEmailTransport } from "../email/mcpTransport.js";
@@ -55,6 +58,35 @@ const escapeHtml = (value: unknown): string => String(value ?? "")
 const humanize = (value: string): string => value.toLowerCase().replaceAll("_", " ")
   .replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
 
+// While a workflow runs, polls the current page every 3s and swaps only the sections whose
+// server HTML changed, keeping scroll position, checked boxes, typed input, and open <details>.
+const LIVE_REFRESH_SCRIPT = `(function(){
+if(!document.body.hasAttribute('data-live-refresh'))return;
+var main=document.querySelector('main.shell'),last=new Map();
+function regions(root){var out=[];Array.prototype.forEach.call(root.children,function(el){
+if(el.classList.contains('toasts'))return;
+if(el.classList.contains('grid')){Array.prototype.forEach.call(el.children,function(c,i){out.push({key:'grid:'+(c.id||i),el:c})});return}
+out.push({key:(el.id||el.tagName+'.'+el.className)+':'+out.length,el:el})});return out}
+regions(main).forEach(function(r){last.set(r.key,r.el.outerHTML)});
+function keep(el){var s={checks:[],values:[],open:[]};
+el.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked!==c.defaultChecked)s.checks.push([c.name,c.value,c.checked])});
+el.querySelectorAll('input:not([type=checkbox]):not([type=hidden]),textarea,select').forEach(function(f){if(f.name&&f.value!==f.defaultValue)s.values.push([f.closest('form')&&f.closest('form').action,f.name,f.value])});
+el.querySelectorAll('details[id]').forEach(function(d){s.open.push([d.id,d.open])});return s}
+function restore(el,s){s.checks.forEach(function(k){el.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.name===k[0]&&c.value===k[1]&&!c.disabled)c.checked=k[2]})});
+s.values.forEach(function(k){el.querySelectorAll('[name]').forEach(function(f){if(f.name===k[1]&&(f.closest('form')&&f.closest('form').action)===k[0])f.value=k[2]})});
+s.open.forEach(function(k){var d=el.querySelector('details[id="'+k[0]+'"]');if(d)d.open=k[1]})}
+function swap(oldEl,html){var t=document.createElement('template');t.innerHTML=html;var n=t.content.firstElementChild;var s=keep(oldEl);var a=document.activeElement,focused=a&&oldEl.contains(a)&&a.name?a.name:null;oldEl.replaceWith(n);restore(n,s);if(focused){var f=n.querySelector('[name="'+focused+'"]');if(f)f.focus()}return n}
+function tick(){var u=new URL(location.href);u.searchParams.delete('notice');u.searchParams.delete('error');u.hash='';
+fetch(u,{headers:{Accept:'text/html'},cache:'no-store'}).then(function(r){return r.ok?r.text():Promise.reject(r.status)}).then(function(html){
+var doc=new DOMParser().parseFromString(html,'text/html'),next=doc.querySelector('main.shell');if(!next)return;
+var cur=regions(main),fresh=regions(next);
+var same=cur.length===fresh.length&&cur.every(function(r,i){return r.key===fresh[i].key});
+if(same){fresh.forEach(function(r,i){var h=r.el.outerHTML;if(last.get(r.key)!==h){last.set(r.key,h);swap(cur[i].el,h)}})}
+else{var toasts=main.querySelector('.toasts');var y=scrollY;main.innerHTML=next.innerHTML;if(toasts&&!main.querySelector('.toasts'))main.prepend(toasts);last.clear();regions(main).forEach(function(r){last.set(r.key,r.el.outerHTML)});scrollTo(0,y)}
+document.title=doc.title;
+if(doc.body.hasAttribute('data-live-refresh'))setTimeout(tick,3000)}).catch(function(){setTimeout(tick,3000)})}
+setTimeout(tick,3000)})();`;
+
 function layout(title: string, body: string, options: { refreshing?: boolean } = {}): string {
   body = body.replace(/<form\b[^>]*method="post"[^>]*>/g,
     (form) => `${form}<input type="hidden" name="csrfToken" value="${csrfToken}">`);
@@ -66,7 +98,7 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
     'name="targetCount" type="number" min="1" max="30"');
   body = body.replace(
     "Only approved contacts with an unknown email status are checked. Inferred addresses are never stored as verified.",
-    "Approved contacts awaiting discovery are checked; earlier EMAIL_NOT_FOUND results can receive a separate guess. Guesses remain EMAIL_NOT_FOUND and are never sendable.",
+    "Approved contacts awaiting discovery are checked; earlier EMAIL_NOT_FOUND results can receive a separate guess. Guesses remain EMAIL_NOT_FOUND and can only be sent as clearly labelled, unverified recipients.",
   );
   body = body.replace(">Find public emails</button>", ">Find emails / guesses</button>");
   body = body.replace("approved contact(s) awaiting discovery", "approved contact(s) awaiting email check or guess");
@@ -80,7 +112,7 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
   );
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)} · Outbound</title>${options.refreshing ? '<meta http-equiv="refresh" content="3">' : ""}
+<title>${escapeHtml(title)} · Outbound</title>
 <style>
 :root{--ink:#17211b;--muted:#67736b;--paper:#f4f1e8;--card:#fffdf7;--line:#d9d5c9;--green:#236448;--green2:#dcebdd;--amber:#9a5b16;--red:#9e3c34;--blue:#315d83;--shadow:0 14px 36px rgba(27,36,30,.08)}
 *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.48 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}.shell{max-width:1240px;margin:auto;padding:28px}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px}.brand{font:700 20px/1 ui-monospace,SFMono-Regular,monospace;letter-spacing:-.04em;color:var(--ink)}.brand span{color:var(--green)}h1{font:650 clamp(28px,4vw,46px)/1.05 Georgia,serif;letter-spacing:-.035em;margin:0 0 8px}h2{font-size:19px;margin:0}h3{font-size:15px;margin:0}.lede,.muted{color:var(--muted)}.lede{font-size:17px;margin:0;max-width:760px}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:18px}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:20px}.span4{grid-column:span 4}.span8{grid-column:span 8}.span12{grid-column:span 12}.cardhead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.stat{font:650 34px/1 Georgia,serif;margin:12px 0 4px}.eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:11px;font-weight:750;color:var(--muted)}.button,button{border:0;border-radius:9px;background:var(--green);color:white;padding:10px 14px;font:650 13px/1.2 inherit;cursor:pointer}.button.secondary,button.secondary{background:#e8e5dc;color:var(--ink)}button.danger{background:var(--red)}button:disabled{opacity:.45;cursor:not-allowed}input,textarea,select{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;background:white;color:var(--ink);font:inherit}textarea{min-height:92px;resize:vertical}label{display:block;font-size:13px;font-weight:650;margin-bottom:12px}label span{display:block;margin-bottom:5px}.inline{display:flex;gap:10px;align-items:center}.inline input[type=checkbox]{width:auto}.actions{display:flex;gap:8px;flex-wrap:wrap}.notice{padding:12px 14px;border:1px solid #e4bd78;background:#fff2d9;border-radius:10px;margin:16px 0}.notice.error{border-color:#e1a29c;background:#fae5e2;color:#70261f}.badge{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:750;letter-spacing:.04em;background:#e8e5dc;color:var(--muted)}.badge.APPROVED,.badge.COMPLETED,.badge.VERIFIED,.badge.PUBLICLY_LISTED{background:var(--green2);color:var(--green)}.badge.REJECTED,.badge.FAILED{background:#f4deda;color:var(--red)}.badge.RUNNING,.badge.ACTIVE{background:#dfeaf5;color:var(--blue)}.badge.PENDING,.badge.DISCOVERED,.badge.UNKNOWN{background:#f2e5c9;color:var(--amber)}table{border-collapse:collapse;width:100%;font-size:13px}th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}th,td{padding:11px 9px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}.score{font:700 18px/1 Georgia,serif}.source{max-width:310px}.source a{word-break:break-all}.empty{border:1px dashed var(--line);border-radius:12px;padding:22px;text-align:center;color:var(--muted)}details{border-top:1px solid var(--line);padding:12px 0}details:last-child{padding-bottom:0}summary{cursor:pointer;font-weight:650}pre{white-space:pre-wrap;word-break:break-word;background:#19231d;color:#dcebdd;padding:14px;border-radius:10px;max-height:360px;overflow:auto;font:12px/1.5 ui-monospace,SFMono-Regular,monospace}.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:22px 0}.step{border-top:3px solid var(--line);padding-top:9px;color:var(--muted);font-size:12px}.step strong{display:block;color:var(--ink);font-size:14px}.check{width:16px;height:16px}.tablewrap{overflow-x:auto}.campaign{display:block;color:inherit}.campaign:hover{text-decoration:none;border-color:#9eaa9f}.campaign p{margin:7px 0 0}.footer{margin-top:28px;color:var(--muted);font-size:12px}@media(max-width:800px){.shell{padding:20px 14px}.span4,.span8{grid-column:span 12}.steps{grid-template-columns:1fr}.top{margin-bottom:20px}th:nth-child(5),td:nth-child(5){display:none}}
@@ -91,9 +123,40 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
 .badge.SENT{background:var(--green2);color:var(--green)}
 .jump{position:sticky;top:0;z-index:5;display:flex;gap:6px;overflow-x:auto;margin:0 -28px 18px;padding:10px 28px;background:var(--paper);border-bottom:1px solid var(--line)}.jump a{flex:none;padding:5px 11px;border-radius:999px;background:#e8e5dc;color:var(--ink);font-size:12px;font-weight:650}.jump a:hover{text-decoration:none;background:var(--green2);color:var(--green)}.grid>[id],.email-draft{scroll-margin-top:64px}@media(max-width:800px){.jump{margin:0 -14px 14px;padding:10px 14px}}
 .tabs{display:flex;gap:4px;margin:22px 0 0;border-bottom:1px solid var(--line)}.tabs a{padding:10px 14px;color:var(--muted);font-weight:650;border-bottom:2px solid transparent;margin-bottom:-1px}.tabs a:hover{text-decoration:none;color:var(--ink)}.tabs a.active{color:var(--ink);border-bottom-color:var(--green)}
+.campaign-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.campaign-heading .button{flex:none}@media(max-width:600px){.campaign-heading{display:block}.campaign-heading .button{display:inline-block;margin-top:14px}}
 .toasts{position:fixed;top:16px;right:16px;left:16px;margin-left:auto;max-width:420px;z-index:10}.toasts .notice{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;margin:0 0 8px;box-shadow:var(--shadow)}.toasts .dismiss{background:none;color:inherit;padding:0 2px;font-size:16px;line-height:1}.badge.UNCERTAIN,.badge.SENDING,.badge.PREPARING{background:#f2e5c9;color:var(--amber)}
-</style></head><body><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/gmail">Email connections</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
-<script>document.querySelectorAll('.toasts .dismiss').forEach(function(b){b.addEventListener('click',function(){b.parentElement.remove()})});document.querySelectorAll('[data-select]').forEach(function(b){b.addEventListener('click',function(){b.closest('form').querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function(c){c.checked=true})})})</script></body></html>`;
+.manual-email{border-top:0;padding:0;min-width:200px}.manual-email form{margin-top:10px}
+</style></head><body${options.refreshing ? " data-live-refresh" : ""}><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/gmail">Email connections</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
+<script>(function(){var u=new URL(location.href);if(u.searchParams.has('notice')||u.searchParams.has('error')){u.searchParams.delete('notice');u.searchParams.delete('error');history.replaceState(null,'',u.pathname+u.search+u.hash)}})();document.addEventListener('click',function(e){var b=e.target.closest('.toasts .dismiss');if(b)b.parentElement.remove();b=e.target.closest('[data-select]');if(b)b.closest('form').querySelectorAll('input[type="checkbox"]'+(b.dataset.select?'[name="'+b.dataset.select+'"]':'')+':not(:disabled)').forEach(function(c){c.checked=true})});</script>
+<script>${LIVE_REFRESH_SCRIPT}</script></body></html>`;
+}
+
+/** First-touch READY_TO_SEND emails that pass every send check now, with what would be sent. */
+function sendBatch(campaignId: number, sender: string) {
+  const deliveries = store.listEmailDeliveries();
+  return store.listCampaignOutreach(campaignId).flatMap((outreach) => {
+    if (outreach.status !== "READY_TO_SEND") return [];
+    if (deliveries.some((item) => item.outreachId === outreach.id && item.status !== "FAILED")) return [];
+    try { store.assertReadyToSend(outreach.id); } catch { return []; }
+    const contact = store.getContact(outreach.contactId)!;
+    const company = store.getCompany(contact.companyId)!;
+    const recipient = store.getContactRecipient(contact.id)!;
+    return [{ outreach, label: `${contact.name} · ${company.name}`, guessed: recipient.guessed,
+      guessBadge: guessVerificationBadge(recipient.verification, contact.guessedEmailVerificationDetail),
+      expected: { fromEmail: sender, toEmail: recipient.address, subject: outreach.subject, body: outreach.body } }];
+  });
+}
+
+function sendQueueStatus(campaignId: number): string {
+  const state = sendQueueState(campaignId);
+  if (!state) return "";
+  const done = `${state.sent.length} of ${state.total} sent`;
+  if (state.running) {
+    return `<div class="notice" data-sending><strong>Sending queue running:</strong> ${done}${state.current ? `; now sending to ${escapeHtml(state.current)}` : ""}. Emails go out ${Math.round(SEND_QUEUE_GAP_MS / 1000)}s apart; keep the dashboard running.</div>`;
+  }
+  return state.failed
+    ? `<div class="notice error"><strong>Sending queue stopped:</strong> ${done}. ${escapeHtml(state.failed.label)} failed: ${escapeHtml(state.failed.error)} ${state.remaining} email(s) were not sent and stay READY_TO_SEND.</div>`
+    : `<div class="notice"><strong>Sending queue finished:</strong> ${done}.</div>`;
 }
 
 function redirect(
@@ -113,11 +176,16 @@ function campaignReturn(campaignId: number, action: string): { path: string; par
     return { path: `${path}/follow-ups`, params: { open: sentId }, anchor: `sent-${sentId}` };
   }
   if (draftId) return { path, params: { draftId }, anchor: `email-${draftId}` };
+  if (action === "outreach/send-all") return { path, params: {}, anchor: "draft-review" };
+  if (action === "outreach/approve-all") return { path, params: {}, anchor: "draft-review" };
+  if (action === "contacts/recheck-angles" || /^contacts\/\d+\/recheck-angle$/.test(action)) return { path, params: {}, anchor: "prospect-research" };
+  if (/^contacts\/\d+\/email$/.test(action)) return { path, params: {}, anchor: "email-discovery" };
   if (action === "workflows/follow-up-generation") return { path: `${path}/follow-ups`, params: {}, anchor: "generate-follow-ups" };
   const anchors: Record<string, string> = {
     "companies/review": "companies", "workflows/company-discovery": "companies",
     "contacts/review": "contacts", "workflows/contact-discovery": "contacts",
-    "workflows/email-discovery": "email-discovery",
+    "workflows/email-discovery": "email-discovery", "emails/verify-guesses": "email-discovery",
+    "emails/treg-recovery": "email-discovery", "emails/pattern-evidence": "email-discovery",
     "workflows/prospect-research": "prospect-research", "workflows/email-generation": "draft-review",
   };
   return { path, params: {}, anchor: anchors[action] };
@@ -175,7 +243,11 @@ function runLabel(run: WorkflowRun): string {
 
 function campaignHeader(campaign: Campaign, url: URL, tab: "pipeline" | "follow-ups"): string {
   const due = countDueFollowUps(store, campaign.id);
-  return `<a href="/">← All campaigns</a><section style="margin-top:18px"><span class="eyebrow">Campaign ${campaign.id}</span><h1>${escapeHtml(campaign.name)}</h1><p class="lede">${escapeHtml(campaign.segment)}</p></section>${notices(url)}<nav class="tabs"><a href="/campaigns/${campaign.id}"${tab === "pipeline" ? ' class="active"' : ""}>Pipeline</a><a href="/campaigns/${campaign.id}/follow-ups"${tab === "follow-ups" ? ' class="active"' : ""}>Sent &amp; follow-ups${due ? ` <span class="badge PENDING">${due} due</span>` : ""}</a></nav>${sectionNav(tab)}`;
+  return `<a href="/">← All campaigns</a><section class="campaign-heading" style="margin-top:18px"><div><span class="eyebrow">Campaign ${campaign.id}</span><h1>${escapeHtml(campaign.name)}</h1><p class="lede">${escapeHtml(campaign.segment)}</p></div><a class="button secondary" href="/campaigns/${campaign.id}/edit">Edit campaign</a></section>${notices(url)}<nav class="tabs"><a href="/campaigns/${campaign.id}"${tab === "pipeline" ? ' class="active"' : ""}>Pipeline</a><a href="/campaigns/${campaign.id}/follow-ups"${tab === "follow-ups" ? ' class="active"' : ""}>Sent &amp; follow-ups${due ? ` <span class="badge PENDING">${due} due</span>` : ""}</a></nav>${sectionNav(tab)}`;
+}
+
+function editCampaignPage(campaign: Campaign, url: URL): string {
+  return layout(`Edit ${campaign.name}`, `<a href="/campaigns/${campaign.id}">← Campaign ${campaign.id}</a>${notices(url)}<section class="card" style="max-width:760px;margin-top:18px"><div class="cardhead"><div><span class="eyebrow">Campaign ${campaign.id}</span><h1>Edit campaign</h1></div><span class="badge ${campaign.status}">${humanize(campaign.status)}</span></div><p class="muted">This updates campaign metadata only. Existing companies, contacts, approvals, research, and outreach are preserved.</p><form method="post" action="/campaigns/${campaign.id}/edit"><label><span>Name</span><input name="name" value="${escapeHtml(campaign.name)}" maxlength="200" required></label><label><span>Target segment</span><textarea name="segment" maxlength="5000" required>${escapeHtml(campaign.segment)}</textarea></label><div class="actions"><button type="submit">Save changes</button><a class="button secondary" href="/campaigns/${campaign.id}">Cancel</a></div></form></section>`);
 }
 
 const SECTIONS = {
@@ -209,6 +281,17 @@ function campaignPage(campaign: Campaign, url: URL): string {
   const contactsAwaitingEmail = contacts.filter(({ status, emailStatus, guessedEmail }) =>
     status === "APPROVED"
       && (emailStatus === "UNKNOWN" || (emailStatus === "EMAIL_NOT_FOUND" && !guessedEmail))).length;
+  const uncheckedGuesses = store.listGuessesAwaitingVerification(campaign.id).length;
+  const inconclusiveGuesses = store.listGuessesAwaitingVerification(campaign.id, { includeInconclusive: true }).length
+    - uncheckedGuesses;
+  const smtpLabel = uncheckedGuesses || !inconclusiveGuesses
+    ? `SMTP-check guesses (${uncheckedGuesses})` : `Re-check inconclusive (${inconclusiveGuesses})`;
+  const recoverable = store.listEmailRecoveryCandidates(campaign.id);
+  const evidenceCandidates = store.listPatternEvidenceCandidates(campaign.id).length;
+  const verifying = isCheckingGuesses(campaign.id);
+  const sending = isSending(campaign.id);
+  const verifyStatus = renderEmailPipelineStatus(contacts, runs,
+    { checking: verifying, lastCheck: lastGuessCheck(campaign.id) });
 
   const companyRows = companies.map((company) => {
     const signal = sourceFor(research, company.id);
@@ -233,7 +316,7 @@ function campaignPage(campaign: Campaign, url: URL): string {
 
   const runRows = runs.map((run) => `<details${run.status === "RUNNING" ? " open" : ""}><summary>${escapeHtml(runLabel(run))} <span class="badge ${run.status}">${humanize(run.status)}</span></summary>${run.error ? `<div class="notice error">${escapeHtml(run.error)}</div>` : ""}<pre>${escapeHtml(run.output || (run.status === "RUNNING" ? "Starting Codex…" : "No output captured."))}</pre></details>`).join("");
 
-  return layout(campaign.name, `${campaignHeader(campaign, url, "pipeline")}<div class="steps"><div class="step"><strong>${companies.length} companies</strong>${approvedCompanies} approved</div><div class="step"><strong>${contacts.length} contacts</strong>${approvedContacts} approved</div><div class="step"><strong>${emailComplete} email checks</strong>${contactsAwaitingEmail} approved contact(s) awaiting discovery</div></div><div class="grid"><section class="card span12" id="companies"><div class="cardhead"><div><span class="eyebrow">Stage 1</span><h2>Company discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/company-discovery" class="inline"><input name="targetCount" type="number" min="1" max="25" value="5" style="width:70px" aria-label="Target count"><button ${isRunning ? "disabled" : ""}>${companies.length ? "Find more" : "Run discovery"}</button></form></div>${companies.length ? `<form method="post" action="/campaigns/${campaign.id}/companies/review"><div class="actions"><button type="button" class="secondary" data-select>Select all</button><button name="decision" value="APPROVED">Approve selected</button><button class="danger" name="decision" value="REJECTED">Reject selected</button></div><div class="tablewrap"><table><thead><tr><th></th><th>Company</th><th>Fit</th><th>Score</th><th>Why ConvoKit</th><th>Signal</th><th>Status</th></tr></thead><tbody>${companyRows}</tbody></table></div></form>` : '<div class="empty">No companies stored yet. Run discovery to populate this stage.</div>'}</section><section class="card span12" id="contacts"><div class="cardhead"><div><span class="eyebrow">Stage 2</span><h2>Contact discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/contact-discovery"><button ${isRunning || approvedCompanies === 0 ? "disabled" : ""}>Run contact discovery</button></form></div>${contacts.length ? `<form method="post" action="/campaigns/${campaign.id}/contacts/review"><div class="actions"><button type="button" class="secondary" data-select>Select all</button><button name="decision" value="APPROVED">Approve selected</button><button class="danger" name="decision" value="REJECTED">Reject selected</button></div><div class="tablewrap"><table><thead><tr><th></th><th>Contact</th><th>Company</th><th>Role / score</th><th>Evidence</th><th>Email</th><th>Status</th></tr></thead><tbody>${contactRows}</tbody></table></div></form>` : `<div class="empty">${approvedCompanies ? "Approved companies are ready for contact discovery." : "Approve companies to unlock contact discovery."}</div>`}</section><section class="card span8" id="email-discovery"><div class="cardhead"><div><span class="eyebrow">Stage 3</span><h2>Email discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/email-discovery"><button ${isRunning || contactsAwaitingEmail === 0 ? "disabled" : ""}>Find public emails</button></form></div><p class="muted">Only approved contacts with an unknown email status are checked. Inferred addresses are never stored as verified.</p>${renderEmailResults(companies, contacts, research)}</section><aside class="card span4"><span class="eyebrow">Safety gates</span><h2 style="margin-top:5px">Human approval stays required</h2><p class="muted">Research may run automatically. Company, contact, and future email-draft approvals remain manual.</p></aside>${renderProspectStages(store, campaign.id, Number(url.searchParams.get("draftId")) || undefined)}<section class="card span12" id="runs"><div class="cardhead"><div><span class="eyebrow">Activity</span><h2>Workflow runs</h2></div>${isRunning ? '<span class="badge RUNNING">Refreshing every 3s</span>' : ""}</div>${runRows || '<div class="empty">No research runs yet.</div>'}</section></div>`, { refreshing: isRunning });
+  return layout(campaign.name, `${campaignHeader(campaign, url, "pipeline")}<div class="steps"><div class="step"><strong>${companies.length} companies</strong>${approvedCompanies} approved</div><div class="step"><strong>${contacts.length} contacts</strong>${approvedContacts} approved</div><div class="step"><strong>${emailComplete} email checks</strong>${contactsAwaitingEmail} approved contact(s) awaiting discovery</div></div><div class="grid"><section class="card span12" id="companies"><div class="cardhead"><div><span class="eyebrow">Stage 1</span><h2>Company discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/company-discovery" class="inline"><input name="targetCount" type="number" min="1" max="25" value="5" style="width:70px" aria-label="Target count"><button ${isRunning ? "disabled" : ""}>${companies.length ? "Find more" : "Run discovery"}</button></form></div>${companies.length ? `<form method="post" action="/campaigns/${campaign.id}/companies/review"><div class="actions"><button type="button" class="secondary" data-select>Select all</button><button name="decision" value="APPROVED">Approve selected</button><button class="danger" name="decision" value="REJECTED">Reject selected</button></div><div class="tablewrap"><table><thead><tr><th></th><th>Company</th><th>Fit</th><th>Score</th><th>Why ConvoKit</th><th>Signal</th><th>Status</th></tr></thead><tbody>${companyRows}</tbody></table></div></form>` : '<div class="empty">No companies stored yet. Run discovery to populate this stage.</div>'}</section><section class="card span12" id="contacts"><div class="cardhead"><div><span class="eyebrow">Stage 2</span><h2>Contact discovery</h2></div><form method="post" action="/campaigns/${campaign.id}/workflows/contact-discovery"><button ${isRunning || approvedCompanies === 0 ? "disabled" : ""}>Run contact discovery</button></form></div>${contacts.length ? `<form method="post" action="/campaigns/${campaign.id}/contacts/review"><div class="actions"><button type="button" class="secondary" data-select>Select all</button><button name="decision" value="APPROVED">Approve selected</button><button class="danger" name="decision" value="REJECTED">Reject selected</button></div><div class="tablewrap"><table><thead><tr><th></th><th>Contact</th><th>Company</th><th>Role / score</th><th>Evidence</th><th>Email</th><th>Status</th></tr></thead><tbody>${contactRows}</tbody></table></div></form>` : `<div class="empty">${approvedCompanies ? "Approved companies are ready for contact discovery." : "Approve companies to unlock contact discovery."}</div>`}</section><section class="card span8" id="email-discovery"><div class="cardhead"><div><span class="eyebrow">Stage 3</span><h2>Email discovery</h2></div><div class="actions"><form method="post" action="/campaigns/${campaign.id}/workflows/email-discovery"><button ${isRunning || contactsAwaitingEmail === 0 ? "disabled" : ""}>Find public emails</button></form><form method="post" action="/campaigns/${campaign.id}/emails/verify-guesses"><button class="secondary" ${verifying || isRunning || uncheckedGuesses + inconclusiveGuesses === 0 ? "disabled" : ""}>${smtpLabel}</button></form><form method="post" action="/campaigns/${campaign.id}/emails/pattern-evidence"><button class="secondary" ${verifying || isRunning || evidenceCandidates === 0 ? "disabled" : ""}>Find pattern evidence (${evidenceCandidates})</button></form><form method="post" action="/campaigns/${campaign.id}/emails/treg-recovery"><button class="secondary" ${verifying || isRunning || recoverable.length === 0 ? "disabled" : ""}>Recover with Treg (${recoverable.length})</button></form></div></div><p class="muted">Only approved contacts with an unknown email status are checked. Inferred addresses are never stored as verified.</p><p class="muted">After email discovery, the free SMTP check runs automatically: it asks the mail server which guessed pattern exists, without sending mail, then prospect research starts. Publicly listed and verified emails are never probed, and a valid result keeps the address labelled as a guess. Find pattern evidence (free) searches public pages for a real same-domain address that confirms the pattern. Treg (paid) runs only when you click Recover with Treg, once per contact whose guess was invalid, catch-all, or inconclusive.</p>${verifyStatus}${renderEmailResults(companies, contacts, research, campaign.id)}</section><aside class="card span4"><span class="eyebrow">Safety gates</span><h2 style="margin-top:5px">Human approval stays required</h2><p class="muted">Research may run automatically. Company, contact, and future email-draft approvals remain manual.</p></aside>${renderProspectStages(store, campaign.id, Number(url.searchParams.get("draftId")) || undefined, sendQueueStatus(campaign.id))}<section class="card span12" id="runs"><div class="cardhead"><div><span class="eyebrow">Activity</span><h2>Workflow runs</h2></div>${isRunning ? '<span class="badge RUNNING">Refreshing every 3s</span>' : ""}</div>${runRows || '<div class="empty">No research runs yet.</div>'}</section></div>`, { refreshing: isRunning || verifying || sending });
 }
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -327,6 +410,21 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     } catch (error) { redirect(response, "/gmail", { error: messageOf(error) }); return; }
   }
 
+  const sendAllPreview = url.pathname.match(/^\/campaigns\/(\d+)\/send-all$/);
+  if (request.method === "GET" && sendAllPreview) {
+    const campaignId = Number(sendAllPreview[1]);
+    if (!store.getCampaign(campaignId)) throw new WorkflowError("Campaign not found");
+    const sender = emailTransport.connectedEmail();
+    if (!sender) { redirect(response, "/gmail", { error: `Configure ${emailTransport.label} before sending approved emails` }); return; }
+    if (isSending(campaignId)) throw new WorkflowError("A send queue is already running for this campaign");
+    const batch = sendBatch(campaignId, sender);
+    if (batch.length === 0) throw new WorkflowError("No READY_TO_SEND emails can be sent right now");
+    const guessed = batch.filter(({ guessed }) => guessed).length;
+    const items = batch.map(({ outreach, label, expected, guessed, guessBadge }) => `<details class="email-draft"><summary>${escapeHtml(label)} · <strong>${escapeHtml(expected.toEmail)}</strong>${guessed ? ` <span class="badge UNKNOWN">Guessed · unverified</span> ${guessBadge}` : ""} · ${escapeHtml(expected.subject)}</summary><pre class="email-preview">${escapeHtml(expected.body)}</pre></details><input type="hidden" name="ids" value="${outreach.id}"><input type="hidden" name="sig-${outreach.id}" value="${signature("outreach", outreach.id, expected)}">`).join("");
+    const gap = Math.round(SEND_QUEUE_GAP_MS / 1000);
+    send(response, 200, layout("Confirm sending all", `<a href="/campaigns/${campaignId}#draft-review">← Emails</a><section class="card" style="margin-top:18px"><h1>Confirm sending ${batch.length} email(s)</h1><p><strong>From:</strong> ${escapeHtml(sender)}</p>${guessed ? `<div class="notice error"><strong>Warning:</strong> ${guessed} of these go to guessed, unverified addresses. They may bounce or reach someone else.</div>` : ""}<p class="muted">Expand any email to read it. They are sent one after another, ${gap}s apart. Each is re-checked just before sending; if its approval, recipient, or content changed, or a send fails, the queue stops and the rest stay READY_TO_SEND.</p><form method="post" action="/campaigns/${campaignId}/outreach/send-all">${items}<div class="notice">This sends real emails to these prospects. Sending cannot be undone by this dashboard.</div><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending each exact approved email above to its recipient${guessed ? ", knowing some addresses are guessed and unverified" : ""}.</label><button>Send ${batch.length} email(s)</button></form></section>`)); return;
+  }
+
   const sendPreview = url.pathname.match(/^\/campaigns\/(\d+)\/outreach\/(\d+)\/send$/);
   if (request.method === "GET" && sendPreview) {
     const campaignId = Number(sendPreview[1]);
@@ -348,10 +446,17 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       : `<a href="/campaigns/${campaignId}/follow-ups?open=${draft.followUpOf}#sent-${draft.followUpOf}">← Sent &amp; follow-ups</a>`;
     const threadNote = draft.followUpOf === null ? ""
       : `<div class="notice">Follow-up: sent as a reply in the same thread as the first email.${emailTransport.id === "mcp" ? " The original email is located and verified in your Sent folder first; if it can't be verified, nothing is sent." : ""}</div>`;
-    send(response, 200, layout("Confirm send", `${back}<section class="card" style="margin-top:18px"><h1>Confirm sending</h1>${threadNote}<p><strong>From:</strong> ${escapeHtml(sender)}<br><strong>To:</strong> ${escapeHtml(recipient.address)}${recipient.guessed ? ' <span class="badge UNKNOWN">Guessed</span>' : ""}<br><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p>${recipientWarning}<pre class="email-preview">${escapeHtml(draft.body)}</pre><div class="notice">This sends a real email to this prospect. Sending cannot be undone by this dashboard.</div><form method="post" action="/campaigns/${campaignId}/outreach/${id}/send"><input type="hidden" name="sendSignature" value="${signature("outreach", id, expected)}"><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending this exact approved email to the recipient above${recipient.guessed ? ", knowing the address is guessed and unverified" : ""}.</label><button>Send email now</button></form></section>`)); return;
+    send(response, 200, layout("Confirm send", `${back}<section class="card" style="margin-top:18px"><h1>Confirm sending</h1>${threadNote}<p><strong>From:</strong> ${escapeHtml(sender)}<br><strong>To:</strong> ${escapeHtml(recipient.address)}${recipient.guessed ? ` <span class="badge UNKNOWN">Guessed</span> ${guessVerificationBadge(recipient.verification, contact.guessedEmailVerificationDetail)}` : ""}<br><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p>${recipientWarning}<pre class="email-preview">${escapeHtml(draft.body)}</pre><div class="notice">This sends a real email to this prospect. Sending cannot be undone by this dashboard.</div><form method="post" action="/campaigns/${campaignId}/outreach/${id}/send"><input type="hidden" name="sendSignature" value="${signature("outreach", id, expected)}"><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending this exact approved email to the recipient above${recipient.guessed ? ", knowing the address is guessed and unverified" : ""}.</label><button>Send email now</button></form></section>`)); return;
   }
   if (request.method === "GET" && url.pathname === "/") {
     send(response, 200, dashboardPage(url)); return;
+  }
+
+  const campaignEditMatch = url.pathname.match(/^\/campaigns\/(\d+)\/edit$/);
+  if (request.method === "GET" && campaignEditMatch) {
+    const campaign = store.getCampaign(Number(campaignEditMatch[1]));
+    if (!campaign) throw new WorkflowError("Campaign not found");
+    send(response, 200, editCampaignPage(campaign, url)); return;
   }
 
   const campaignMatch = url.pathname.match(/^\/campaigns\/(\d+)(\/follow-ups)?$/);
@@ -389,6 +494,15 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       const target = campaignReturn(campaignId, action);
       redirect(response, target.path, { ...target.params, ...message }, target.anchor);
     };
+
+    if (action === "edit") {
+      const name = form.get("name")?.trim() ?? "";
+      const segment = form.get("segment")?.trim() ?? "";
+      if (name.length > 200) throw new WorkflowError("Campaign name cannot exceed 200 characters");
+      if (segment.length > 5000) throw new WorkflowError("Target segment cannot exceed 5000 characters");
+      store.updateCampaign(campaignId, { name, segment });
+      back({ notice: "Campaign updated" }); return;
+    }
 
     const draftAction = action.match(/^outreach\/(\d+)\/(edit|review|rewrite|restore|send|replied)$/);
     if (draftAction) {
@@ -441,6 +555,107 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }); return;
     }
 
+    if (action === "outreach/send-all") {
+      const sender = emailTransport.connectedEmail();
+      if (!sender || form.get("confirm") !== "yes") throw new WorkflowError("Confirm sending to start the queue");
+      if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {
+        throw new WorkflowError("Wait for the active workflow to finish before sending");
+      }
+      const confirmed = new Map(sendBatch(campaignId, sender).map((item) => [item.outreach.id, item]));
+      const ids = form.getAll("ids").map((value) => requirePositiveId(value, "email ID"));
+      // Every email must still match exactly what the confirmation page showed.
+      const queue = ids.map((id) => {
+        const item = confirmed.get(id);
+        if (!item || !validSignature(form.get(`sig-${id}`), signature("outreach", id, item.expected))) {
+          throw new WorkflowError("Send confirmation expired or a recipient/content changed. Review the emails and confirm again.");
+        }
+        return item;
+      });
+      if (queue.length === 0) throw new WorkflowError("No emails were confirmed");
+      void startSendQueue(campaignId, queue.map(({ outreach, label }) => ({ outreachId: outreach.id, label })),
+        async (outreachId) => {
+          const item = sendBatch(campaignId, sender).find(({ outreach }) => outreach.id === outreachId);
+          const original = confirmed.get(outreachId)!;
+          if (!item || JSON.stringify(item.expected) !== JSON.stringify(original.expected)) {
+            throw new Error("Its approval, recipient, or content changed after confirmation; review it again");
+          }
+          await emailSending.sendApproved(outreachId, item.expected);
+        });
+      back({ notice: `Sending ${queue.length} email(s) one after another, ${Math.round(SEND_QUEUE_GAP_MS / 1000)}s apart. Progress is shown under Emails.` }); return;
+    }
+    if (action === "outreach/approve-all") {
+      if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {
+        throw new WorkflowError("Wait for the active workflow to finish before reviewing drafts");
+      }
+      const ids = form.getAll("ids").map((value) => requirePositiveId(value, "draft ID"));
+      if (ids.length === 0) throw new WorkflowError("No drafts to approve");
+      // Only the first-touch drafts the reviewer saw on the page; newer drafts need their own review.
+      const campaignDrafts = new Set(store.listCampaignOutreach(campaignId)
+        .filter(({ status }) => status === "DRAFT").map(({ id }) => id));
+      let approved = 0;
+      const skipped: string[] = [];
+      for (const id of ids) {
+        if (!campaignDrafts.has(id)) { skipped.push(`#${id}: no longer a draft in this campaign`); continue; }
+        try { store.approveOutreachForSending(id); approved += 1; }
+        catch (error) { skipped.push(`#${id}: ${messageOf(error)}`); }
+      }
+      back({ notice: `${approved} draft(s) approved and READY_TO_SEND. Nothing was sent.${skipped.length ? ` Skipped ${skipped.length}: ${skipped.join("; ")}` : ""}` }); return;
+    }
+    const recheck = action.match(/^contacts\/(\d+)\/recheck-angle$/);
+    if (recheck || action === "contacts/recheck-angles") {
+      const ids = recheck ? [Number(recheck[1])]
+        : [...new Set(form.getAll("recheckIds").map((value) => requirePositiveId(value, "contact ID")))];
+      if (ids.length === 0) throw new WorkflowError("Check at least one prospect to recheck");
+      if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {
+        throw new WorkflowError("Wait for the active workflow to finish before rechecking an angle");
+      }
+      const eligible = new Set(store.listResearchEligibleProspects(campaignId).map(({ id }) => id));
+      for (const id of ids) {
+        const contact = store.getContact(id);
+        if (!contact || store.getCompany(contact.companyId)?.campaignId !== campaignId) {
+          throw new WorkflowError("Contact does not belong to this campaign");
+        }
+        if (!eligible.has(id)) {
+          throw new WorkflowError(`${contact.name} is not eligible for prospect research (it needs a usable email)`);
+        }
+      }
+      const reset = store.resetNoSignalResearchMany(ids);
+      const run = launchWorkflow(db, { campaignId, kind: "PROSPECT_RESEARCH" });
+      back({ notice: `Rechecking the angle for ${reset.length} prospect(s): ${reset.map(({ name }) => name).join(", ")} (run ${run.id}). Results stay separate from drafting until you select them.` }); return;
+    }
+    const manualEmail = action.match(/^contacts\/(\d+)\/email$/);
+    if (manualEmail) {
+      const contact = store.getContact(Number(manualEmail[1]));
+      if (!contact || store.getCompany(contact.companyId)?.campaignId !== campaignId) {
+        throw new WorkflowError("Contact does not belong to this campaign");
+      }
+      if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {
+        throw new WorkflowError("Wait for the active workflow to finish before updating emails");
+      }
+      const emailStatus = form.get("emailStatus");
+      if (emailStatus !== "VERIFIED" && emailStatus !== "PUBLICLY_LISTED") {
+        throw new WorkflowError("Choose whether the email is verified or publicly listed");
+      }
+      const updated = store.recordManualEmail({ contactId: contact.id, email: form.get("email") ?? "",
+        emailStatus, sourceUrl: form.get("sourceUrl") ?? "", note: form.get("note") ?? undefined });
+      back({ notice: `Email for ${updated.name} updated to ${updated.email}` }); return;
+    }
+    if (action === "emails/verify-guesses") {
+      // New guesses first; once all are checked, the button re-checks inconclusive ones.
+      const includeInconclusive = store.listGuessesAwaitingVerification(campaignId).length === 0;
+      const count = store.listGuessesAwaitingVerification(campaignId, { includeInconclusive }).length;
+      if (count === 0) throw new WorkflowError("No guessed emails are awaiting an SMTP check");
+      void startGuessCheck(db, campaignId, { includeInconclusive });
+      back({ notice: `SMTP-checking ${count} guessed email(s). Treg does not run automatically.` }); return;
+    }
+    if (action === "emails/pattern-evidence") {
+      const run = launchPatternEvidence(db, campaignId);
+      back({ notice: `Started pattern-evidence search (run ${run.id}). Updated guesses are SMTP-checked automatically afterwards.` }); return;
+    }
+    if (action === "emails/treg-recovery") {
+      const run = launchEmailRecovery(db, campaignId);
+      back({ notice: `Started Treg recovery (run ${run.id}). Recovered contacts need prospect research afterwards.` }); return;
+    }
     if (action.startsWith("workflows/")) {
       const kinds = {
         "workflows/company-discovery": "COMPANY_DISCOVERY",

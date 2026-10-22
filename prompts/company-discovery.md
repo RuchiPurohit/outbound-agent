@@ -58,6 +58,10 @@ certifications still require an authoritative source before making a claim.
 Rank qualified companies using the weighted rubric in `docs/ICP.md`; do not
 assign an unsupported 0–100 score by intuition. Respect the dashboard's
 requested result count. Never weaken verification or pad the list to reach it.
+Prioritize conversion likelihood: rank strong greenfield chat opportunities
+above products that already have embedded chat but no sourced switching or
+expansion trigger. `NO_PUBLIC_EVIDENCE` or `NONE_FOUND` is not itself a positive
+signal, but it may accompany a high-scoring product-specific greenfield thesis.
 
 Rules:
 
@@ -73,6 +77,12 @@ Rules:
   alone do not count as user-to-user chat. Store `NO_PUBLIC_EVIDENCE` when the
   search found no reliable public evidence; otherwise store `UNKNOWN`.
 - `NO_PUBLIC_EVIDENCE` and `NONE_FOUND` do not claim that chat is absent.
+- Do not reward existing chat merely for existing. Without a sourced reason to
+  replace, rebuild, or expand it, treat it as weak conversion evidence.
+- Treat a sourced shared human activity as a valid greenfield opportunity even
+  when chat does not exist. This includes multiplayer and social games when
+  players have a concrete reason to communicate around a match, club,
+  tournament, invitation, or rematch.
 - Do not infer a `HOMEGROWN` implementation merely because chat appears in the
   product. Name the vendor and save a source when the implementation is `VENDOR`.
 - Exclude candidates whose only messaging signal is human-to-AI chat, an AI

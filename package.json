@@ -15,6 +15,8 @@
     "contacts:approve": "npm run build --silent && node dist/src/commands/approveContacts.js",
     "contacts:reject": "npm run build --silent && node dist/src/commands/rejectContacts.js",
     "emails:discover": "npm run build --silent && node dist/src/commands/discoverEmails.js",
+    "emails:verify-guesses": "npm run build --silent && node dist/src/commands/verifyGuesses.js",
+    "emails:recover": "npm run build --silent && node dist/src/commands/recoverEmails.js",
     "dashboard": "npm run build --silent && node dist/src/web/server.js",
     "test": "npm run build && node --test dist/test",
     "typecheck": "tsc -p tsconfig.json --noEmit"
