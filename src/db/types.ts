@@ -119,7 +119,11 @@ export interface Outreach {
   approvedBody: string | null;
   /** First-touch outreach this follow-up replies to; null for a first touch. */
   followUpOf: number | null;
+  /** 1 or 2 for follow-ups in the first touch's thread; null for a first touch. */
+  followUpStep: FollowUpStep | null;
 }
+
+export type FollowUpStep = 1 | 2;
 
 export type DeliveryStatus = "PREPARING" | "SENDING" | "SENT" | "FAILED" | "UNCERTAIN";
 

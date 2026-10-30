@@ -453,4 +453,9 @@ export const migrations: readonly string[] = [
     ALTER TABLE companies ADD COLUMN email_domain_basis TEXT;
     ALTER TABLE companies ADD COLUMN email_domain_checked_at TEXT;
   `,
+  `
+    ALTER TABLE outreach ADD COLUMN follow_up_step INTEGER
+      CHECK (follow_up_step IS NULL OR follow_up_step IN (1, 2));
+    UPDATE outreach SET follow_up_step = 1 WHERE follow_up_of IS NOT NULL;
+  `,
 ];
