@@ -995,6 +995,19 @@ export class OutboundStore {
     return this.transitionOutreach(id, "SENT", "REPLIED");
   }
 
+  /** Records a delivery-failure notice for a sent email; its follow-ups will not be sent. */
+  markOutreachBounced(id: number, detail: string): Outreach {
+    const outreach = this.requireOutreach(id);
+    if (!detail.trim()) throw new WorkflowError("Record the bounce notice's sender, date, and reason");
+    if (outreach.status !== "SENT") throw new WorkflowError("Only SENT emails can be marked as bounced");
+    // A bounced follow-up still means the address is dead, so the whole thread is marked.
+    const firstTouch = this.requireOutreach(outreach.followUpOf ?? outreach.id);
+    if (firstTouch.status !== "SENT") throw new WorkflowError(`The first-touch email is already ${firstTouch.status}`);
+    this.db.prepare("UPDATE outreach SET status = 'BOUNCED', bounced_at = ?, bounce_detail = ? WHERE id = ?")
+      .run(now(), detail.trim(), firstTouch.id);
+    return this.getOutreach(firstTouch.id)!;
+  }
+
   assertReadyToSend(id: number): Outreach {
     const draft = this.requireOutreach(id);
     if (draft.status !== "READY_TO_SEND") throw new WorkflowError("Only READY_TO_SEND emails can be sent");
@@ -1008,6 +1021,7 @@ export class OutboundStore {
     if (draft.followUpOf !== null) {
       const parent = this.requireOutreach(draft.followUpOf);
       if (parent.status === "REPLIED") throw new WorkflowError("The prospect replied; this follow-up will not be sent");
+      if (parent.status === "BOUNCED") throw new WorkflowError("The first email bounced; this follow-up will not be sent");
       if (parent.status !== "SENT" || !parent.sentAt) throw new WorkflowError("The first-touch email has not been sent");
       const due = this.followUpSendableAt(draft);
       if (!due) throw new WorkflowError("Follow-up 1 must be sent before Follow-up 2");
@@ -1362,7 +1376,8 @@ function outreachFromRow(row: Row): Outreach {
     researchId: nullableInteger(row, "research_id"), reviewedAt: nullableText(row, "reviewed_at"),
     approvedRecipient: nullableText(row, "approved_recipient"), approvedSubject: nullableText(row, "approved_subject"),
     approvedBody: nullableText(row, "approved_body"), followUpOf: nullableInteger(row, "follow_up_of"),
-    followUpStep: nullableInteger(row, "follow_up_step") as Outreach["followUpStep"] };
+    followUpStep: nullableInteger(row, "follow_up_step") as Outreach["followUpStep"],
+    bouncedAt: nullableText(row, "bounced_at"), bounceDetail: nullableText(row, "bounce_detail") };
 }
 function emailDeliveryFromRow(row: Row): EmailDelivery {
   return {

@@ -20,7 +20,7 @@ export type GuessVerification = "VALID" | "INVALID" | "CATCH_ALL" | "UNKNOWN";
 export type GuessSource = "PATTERN" | "TREG_CATCH_ALL";
 /** Outcome of the one-time Treg recovery after an unsuccessful SMTP check of a guess. */
 export type EmailRecoveryOutcome = "VERIFIED" | "CATCH_ALL_CANDIDATE" | "NOT_FOUND";
-export type OutreachStatus = "DRAFT" | "APPROVED" | "READY_TO_SEND" | "SENT" | "REPLIED" | "REJECTED";
+export type OutreachStatus = "DRAFT" | "APPROVED" | "READY_TO_SEND" | "SENT" | "REPLIED" | "BOUNCED" | "REJECTED";
 export type WorkflowRunKind = "COMPANY_DISCOVERY" | "CONTACT_DISCOVERY" | "EMAIL_DISCOVERY"
   | "PROSPECT_RESEARCH" | "EMAIL_GENERATION" | "DRAFT_REWRITE" | "FOLLOW_UP_GENERATION";
 export type WorkflowRunStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
@@ -121,6 +121,10 @@ export interface Outreach {
   followUpOf: number | null;
   /** 1 or 2 for follow-ups in the first touch's thread; null for a first touch. */
   followUpStep: FollowUpStep | null;
+  /** When a delivery-failure notice for this sent email was recorded. */
+  bouncedAt: string | null;
+  /** The bounce notice's sender, date, and reason. */
+  bounceDetail: string | null;
 }
 
 export type FollowUpStep = 1 | 2;

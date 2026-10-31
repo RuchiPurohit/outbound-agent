@@ -9,7 +9,7 @@ ONLY those IDs. An empty or missing selection means no drafting is authorized.
 Never expand the selection to other sent emails.
 
 1. For each ID, read getOutreach(id). It must be a first touch
-   (`followUpOf` is null) with status SENT. Skip REPLIED emails.
+   (`followUpOf` is null) with status SENT. Skip REPLIED and BOUNCED emails.
 2. Call nextFollowUpStep(id). `1` means write Follow-up 1, `2` means write
    Follow-up 2, and `undefined` means skip it (a follow-up is still pending or
    both exist).

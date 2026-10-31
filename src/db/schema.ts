@@ -458,4 +458,46 @@ export const migrations: readonly string[] = [
       CHECK (follow_up_step IS NULL OR follow_up_step IN (1, 2));
     UPDATE outreach SET follow_up_step = 1 WHERE follow_up_of IS NOT NULL;
   `,
+  `
+    CREATE TABLE outreach_v20 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+      subject TEXT NOT NULL CHECK (length(trim(subject)) > 0),
+      body TEXT NOT NULL CHECK (length(trim(body)) > 0),
+      status TEXT NOT NULL DEFAULT 'DRAFT'
+        CHECK (status IN ('DRAFT', 'APPROVED', 'READY_TO_SEND', 'SENT', 'REPLIED', 'BOUNCED', 'REJECTED')),
+      sent_at TEXT,
+      gmail_thread_id TEXT,
+      research_id INTEGER REFERENCES research(id),
+      reviewed_at TEXT,
+      approved_recipient TEXT,
+      approved_subject TEXT,
+      approved_body TEXT,
+      follow_up_of INTEGER REFERENCES outreach(id),
+      follow_up_step INTEGER CHECK (follow_up_step IS NULL OR follow_up_step IN (1, 2)),
+      bounced_at TEXT,
+      bounce_detail TEXT,
+      CHECK (status NOT IN ('SENT', 'REPLIED', 'BOUNCED') OR sent_at IS NOT NULL),
+      CHECK ((status = 'BOUNCED') = (bounced_at IS NOT NULL))
+    ) STRICT;
+    INSERT INTO outreach_v20 (id, contact_id, subject, body, status, sent_at, gmail_thread_id, research_id,
+      reviewed_at, approved_recipient, approved_subject, approved_body, follow_up_of, follow_up_step)
+    SELECT id, contact_id, subject, body, status, sent_at, gmail_thread_id, research_id,
+      reviewed_at, approved_recipient, approved_subject, approved_body, follow_up_of, follow_up_step
+    FROM outreach;
+    DROP TABLE outreach;
+    ALTER TABLE outreach_v20 RENAME TO outreach;
+    CREATE INDEX outreach_contact_status_idx ON outreach(contact_id, status);
+    CREATE INDEX outreach_follow_up_idx ON outreach(follow_up_of);
+    CREATE TRIGGER outreach_status_transition
+    BEFORE UPDATE OF status ON outreach
+    WHEN NOT (
+      OLD.status = NEW.status
+      OR (OLD.status = 'DRAFT' AND NEW.status IN ('APPROVED', 'REJECTED'))
+      OR (OLD.status = 'APPROVED' AND NEW.status IN ('READY_TO_SEND', 'DRAFT'))
+      OR (OLD.status = 'READY_TO_SEND' AND NEW.status IN ('SENT', 'DRAFT'))
+      OR (OLD.status = 'SENT' AND NEW.status IN ('REPLIED', 'BOUNCED'))
+    )
+    BEGIN SELECT RAISE(ABORT, 'invalid outreach status transition'); END;
+  `,
 ];

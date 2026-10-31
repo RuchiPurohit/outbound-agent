@@ -21,10 +21,20 @@ function migrate(db: SqliteDatabase): void {
     throw new Error(`Database schema version ${currentVersion} is newer than supported version ${migrations.length}`);
   }
 
-  for (let index = currentVersion; index < migrations.length; index += 1) {
-    db.transaction(() => {
-      db.exec(migrations[index]);
-      db.pragma(`user_version = ${index + 1}`);
-    })();
+  // Table rebuilds drop and recreate referenced tables, so foreign keys are
+  // checked once per migration instead of enforced statement by statement.
+  db.pragma("foreign_keys = OFF");
+  try {
+    for (let index = currentVersion; index < migrations.length; index += 1) {
+      db.transaction(() => {
+        db.exec(migrations[index]);
+        if ((db.pragma("foreign_key_check") as unknown[]).length) {
+          throw new Error(`Migration ${index + 1} left foreign key violations`);
+        }
+        db.pragma(`user_version = ${index + 1}`);
+      })();
+    }
+  } finally {
+    db.pragma("foreign_keys = ON");
   }
 }

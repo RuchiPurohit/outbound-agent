@@ -171,7 +171,7 @@ function campaignReturn(campaignId: number, action: string): { path: string; par
   const path = `/campaigns/${campaignId}`;
   const draftId = action.match(/^outreach\/(\d+)\//)?.[1];
   const outreach = draftId ? store.getOutreach(Number(draftId)) : undefined;
-  if (outreach && (outreach.followUpOf !== null || outreach.status === "SENT" || outreach.status === "REPLIED")) {
+  if (outreach && (outreach.followUpOf !== null || outreach.status === "SENT" || outreach.status === "REPLIED" || outreach.status === "BOUNCED")) {
     const sentId = String(outreach.followUpOf ?? outreach.id);
     return { path: `${path}/follow-ups`, params: { open: sentId }, anchor: `sent-${sentId}` };
   }
@@ -504,7 +504,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       back({ notice: "Campaign updated" }); return;
     }
 
-    const draftAction = action.match(/^outreach\/(\d+)\/(edit|review|rewrite|restore|send|replied)$/);
+    const draftAction = action.match(/^outreach\/(\d+)\/(edit|review|rewrite|restore|send|replied|bounced)$/);
     if (draftAction) {
       const outreachId = Number(draftAction[1]);
       const draft = store.getOutreach(outreachId);
@@ -531,6 +531,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       if (draftAction[2] === "replied") {
         store.markOutreachReplied(outreachId);
         back({ notice: "Marked as replied. No follow-up will be sent." }); return;
+      }
+      if (draftAction[2] === "bounced") {
+        store.markOutreachBounced(outreachId, form.get("detail") ?? "");
+        back({ notice: "Marked as bounced. No follow-up will be sent." }); return;
       }
       if (draftAction[2] === "edit") {
         store.editOutreach(outreachId, { subject: form.get("subject") ?? "", body: form.get("body") ?? "" });
