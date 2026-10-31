@@ -84,7 +84,8 @@ describe("Follow-ups", () => {
       assert.match(mime, new RegExp(`In-Reply-To: <${f.firstDelivery.id}@outbound-agent.local>`));
       assert.match(mime, new RegExp(`References: <${f.firstDelivery.id}@outbound-agent.local>`));
       assert.equal(f.store.getOutreach(followUp.id)?.status, "SENT");
-      assert.match(renderFollowUps(f.store, f.campaign.id), /Follow-up sent/);
+      assert.equal(f.store.getOutreach(followUp.id)?.followUpStep, 1);
+      assert.match(renderFollowUps(f.store, f.campaign.id), /Follow-up 2 due/);
     } finally { f.db.close(); }
   });
 
@@ -115,7 +116,60 @@ describe("Follow-ups", () => {
       assert.match(prompt, new RegExp(`outreach IDs: \\[${f.first.id}\\]`));
       assert.match(prompt, /Do not approve, schedule, or send anything/);
       f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_BODY" });
-      assert.throws(() => validateRequest(f.store, { ...request, outreachIds: [f.first.id] }), /no follow-up/);
+      assert.throws(() => validateRequest(f.store, { ...request, outreachIds: [f.first.id] }), /ready for its next follow-up/);
+    } finally { f.db.close(); }
+  });
+
+  it("drafts Follow-up 2 only after Follow-up 1 was sent, and sends it a week later in the same thread", async () => {
+    const f = await sentFixture();
+    try {
+      const first = f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_1" });
+      assert.equal(f.store.nextFollowUpStep(f.first.id), undefined);
+      assert.throws(() => f.store.createFollowUp({ outreachId: f.first.id, body: "too early" }), /already exists/);
+      f.store.approveOutreachForSending(first.id);
+      f.backdate(7);
+      await f.sending.sendApproved(first.id, { fromEmail: sender, toEmail: "pat@example.com", subject: first.subject, body: first.body });
+
+      assert.equal(f.store.nextFollowUpStep(f.first.id), 2);
+      const request = { campaignId: f.campaign.id, kind: "FOLLOW_UP_GENERATION" as const, outreachIds: [f.first.id] };
+      validateRequest(f.store, request);
+      assert.match(buildPrompt(request), /nextFollowUpStep/);
+      const second = f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_2" });
+      assert.equal(second.followUpStep, 2);
+      assert.equal(second.subject, "Re: Shared workspaces");
+      assert.equal(second.researchId, f.first.researchId);
+      assert.equal(f.store.nextFollowUpStep(f.first.id), undefined);
+      assert.throws(() => f.store.createFollowUp({ outreachId: f.first.id, body: "third" }), /already exists/);
+
+      f.store.approveOutreachForSending(second.id);
+      const expected = { fromEmail: sender, toEmail: "pat@example.com", subject: second.subject, body: second.body };
+      await assert.rejects(f.sending.sendApproved(second.id, expected), /not due until/);
+      assert.match(renderFollowUps(f.store, f.campaign.id), /7 days after Follow-up 1/);
+      f.db.prepare("UPDATE outreach SET sent_at = ? WHERE id = ?").run(new Date(Date.now() - 7 * 86_400_000).toISOString(), first.id);
+      await f.sending.sendApproved(second.id, expected);
+      const payload = JSON.parse(String(f.requests.at(-1)!.body)) as { raw: string; threadId?: string };
+      assert.equal(payload.threadId, "thread-1");
+      assert.match(Buffer.from(payload.raw, "base64url").toString("utf8"), new RegExp(`In-Reply-To: <${f.firstDelivery.id}@outbound-agent.local>`));
+      const html = renderFollowUps(f.store, f.campaign.id);
+      assert.match(html, /Both follow-ups sent/);
+      assert.doesNotMatch(html, /Mark as replied/);
+      assert.throws(() => validateRequest(f.store, request), /ready for its next follow-up/);
+    } finally { f.db.close(); }
+  });
+
+  it("cancels Follow-up 2 when the prospect replies after Follow-up 1", async () => {
+    const f = await sentFixture();
+    try {
+      const first = f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_1" });
+      f.store.approveOutreachForSending(first.id);
+      f.backdate(7);
+      await f.sending.sendApproved(first.id, { fromEmail: sender, toEmail: "pat@example.com", subject: first.subject, body: first.body });
+      const second = f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_2" });
+      f.store.approveOutreachForSending(second.id);
+      f.store.markOutreachReplied(f.first.id);
+      assert.throws(() => f.store.assertReadyToSend(second.id), /replied/);
+      assert.equal(f.store.nextFollowUpStep(f.first.id), undefined);
+      assert.match(renderFollowUps(f.store, f.campaign.id), /Replied/);
     } finally { f.db.close(); }
   });
 

@@ -151,21 +151,75 @@ engagement,” “touch base,” or “circle back.”
 
 ## Follow-up sequence rules
 
-Follow-up 1 is implemented by `prompts/follow-up-generation.md`. Each follow-up
-is its own outreach record linked to the first touch, never extra text inside
-the first-touch record. It replies in the same thread (`Re: <original subject>`)
-and can be sent only 7 days after the first touch, after explicit human
-approval and send confirmation, and only if the prospect has not been marked as
-replied. Follow-up 2 is not implemented yet.
+Follow-ups are written by `prompts/follow-up-generation.md`. Each follow-up is
+its own outreach record linked to the first touch, never extra text inside the
+first-touch record. Both reply in the same thread (`Re: <original subject>`),
+keep the first touch's cited signal, and need explicit human approval and send
+confirmation. Follow-up 1 can be sent 7 days after the first touch and
+Follow-up 2 7 days after Follow-up 1, and neither once the prospect is marked
+as replied. There is no third follow-up.
 
-- Follow-up 1 adds new, verified information and makes ConvoKit concrete for the
-  prospect's workflow. Keep capabilities short. Include pricing or comparisons
-  only when current plans are directly verified and comparable. Prefer 70–100
-  words and never exceed 130.
-- Follow-up 2 closes the loop and reinforces why this company was contacted.
-  Make the workflow concrete; do not repeat features or pricing. Do not guilt
-  the recipient, fabricate urgency, or say “just checking in.” Prefer 70–100
-  words and never exceed 130.
+Both follow-ups:
+
+- Carry exactly one link, the live demo, built per docs/PRODUCT.md with the
+  prospect's company name and the scenario matching their segment.
+- Never claim the recipient read, opened, clicked, or ignored an earlier email,
+  and never say "just checking in", "bumping this", or "following up".
+- Do not guilt the recipient, fabricate urgency, repeat feature lists, or
+  mention pricing.
+
+### Follow-up 1: the live demo
+
+Prefer 90–130 words and never exceed 150. It replaces the call request with an
+easy way to say no.
+
+```text
+Hi <first name>,
+
+I turned <the idea from the first email, in 3–6 words> into something you can
+try in 30 seconds, no signup:
+
+https://convokit.app/demo?for=<Company>&s=<scenario>
+
+It opens on <the scenario, as described in docs/PRODUCT.md>. <One sentence
+tying it to the prospect's product, e.g. "That's the discussion I'd picture
+living on each Oz run.">. You play both sides: type on the left and it lands
+on the right instantly, with typing indicators and history. Scan the QR code
+to make your phone the second screen.
+
+<Optional, only when it fits the workflow: one sentence on a confirmed
+capability, e.g. the message.created webhook for notifying people outside the
+product.>
+
+That's the realtime layer <Company> wouldn't have to build. The code behind it
+is on the same page.
+
+If it's not a priority right now, a quick "not now" is completely fine.
+
+Ruchi
+https://convokit.app/
+```
+
+### Follow-up 2: close the loop
+
+Prefer 50–90 words and never exceed 110. It is the last email in the sequence.
+
+```text
+Hi <first name>,
+
+Last note from me on this. Two quick options:
+
+1. If <the workflow from the first email> isn't on <Company>'s roadmap, is
+   there someone else who owns <collaboration / messaging / support>? Happy to
+   send them the demo instead.
+2. If the timing is just off, I'll leave it here. The demo stays up:
+   https://convokit.app/demo?for=<Company>&s=<scenario>
+
+Either way, thanks for reading.
+
+Ruchi
+https://convokit.app/
+```
 
 ## Persistence and human review
 

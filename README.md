@@ -182,6 +182,21 @@ The saved runbooks are `prompts/prospect-research.md` and
 `prompts/email-generation.md`. Their generated Markdown reports are covered by
 the existing `data/campaign-*.md` ignore pattern.
 
+### Follow-ups
+
+Sent first touches move to the **Sent & follow-ups** tab. Each gets at most two
+threaded follow-ups, drafted one at a time for the emails you check:
+
+1. **Follow-up 1** shares the live demo (`https://convokit.app/demo?for=<Company>&s=<scenario>`,
+   scenario per segment in [docs/PRODUCT.md](docs/PRODUCT.md)). Sendable 7 days
+   after the first email.
+2. **Follow-up 2** closes the loop: a referral ask or a polite stop, with the
+   same demo link. It can be drafted once Follow-up 1 is sent and is sendable 7
+   days after it.
+
+Both follow the templates in [docs/EMAIL_RULES.md](docs/EMAIL_RULES.md), stay
+`DRAFT` until you approve them, and are cancelled by **Mark as replied**.
+
 ### Gmail sending
 
 Follow [Gmail setup](docs/GMAIL_SETUP.md) to configure a Gmail sender. The

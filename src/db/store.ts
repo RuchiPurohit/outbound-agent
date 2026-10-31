@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { patternCandidates } from "../email/guessPatterns.js";
 import type {
   Campaign, CampaignStatus, ChatFeatureStatus, ChatImplementation, Company, CompanyScoreBreakdown,
-  Contact, EmailGuessConfidence, EmailGuessPattern, EmailRecoveryOutcome, EmailStatus, GuessVerification, Outreach, ResearchRecord,
+  Contact, EmailGuessConfidence, EmailGuessPattern, EmailRecoveryOutcome, EmailStatus, FollowUpStep, GuessVerification, Outreach, ResearchRecord,
   ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch, EmailDelivery,
 } from "./types.js";
 
@@ -837,24 +837,48 @@ export class OutboundStore {
           throw new WorkflowError("Follow-up generation is restricted to checked emails in the active workflow");
         }
       }
-      if (this.getFollowUp(parent.id)) throw new WorkflowError("A follow-up already exists for this email");
+      const step = this.nextFollowUpStep(parent.id);
+      if (!step) throw new WorkflowError("A follow-up already exists for this email");
       const body = input.body.trim();
       if (!body || Buffer.byteLength(body) > 100_000) {
         throw new WorkflowError("Email body must be nonempty and no larger than 100 KB");
       }
       const result = this.db.prepare(`
-        INSERT INTO outreach (contact_id, subject, body, status, research_id, follow_up_of)
-        VALUES (?, ?, ?, 'DRAFT', ?, ?)
-      `).run(parent.contactId, followUpSubject(parent.subject), body, parent.researchId, parent.id);
+        INSERT INTO outreach (contact_id, subject, body, status, research_id, follow_up_of, follow_up_step)
+        VALUES (?, ?, ?, 'DRAFT', ?, ?, ?)
+      `).run(parent.contactId, followUpSubject(parent.subject), body, parent.researchId, parent.id, step);
       return this.getOutreach(Number(result.lastInsertRowid))!;
     })();
   }
 
-  /** The current follow-up for a first touch; rejected follow-ups can be regenerated. */
-  getFollowUp(outreachId: number): Outreach | undefined {
-    const row = this.db.prepare(`SELECT * FROM outreach WHERE follow_up_of = ? AND status != 'REJECTED'
-      ORDER BY id DESC LIMIT 1`).get(outreachId) as Row | undefined;
+  /** The current follow-up at a step for a first touch; rejected follow-ups can be regenerated. */
+  getFollowUp(outreachId: number, step: FollowUpStep = 1): Outreach | undefined {
+    const row = this.db.prepare(`SELECT * FROM outreach WHERE follow_up_of = ? AND follow_up_step = ?
+      AND status != 'REJECTED' ORDER BY id DESC LIMIT 1`).get(outreachId, step) as Row | undefined;
     return row ? outreachFromRow(row) : undefined;
+  }
+
+  /**
+   * The follow-up a first touch can receive next: 1 when it has none, 2 once
+   * Follow-up 1 was sent, and undefined while a follow-up is pending or both exist.
+   */
+  nextFollowUpStep(outreachId: number): FollowUpStep | undefined {
+    const first = this.getFollowUp(outreachId, 1);
+    if (!first) return 1;
+    if (first.status !== "SENT" || this.getFollowUp(outreachId, 2)) return undefined;
+    return 2;
+  }
+
+  /**
+   * When a follow-up may be sent: Follow-up 1 a week after the first touch,
+   * Follow-up 2 a week after Follow-up 1. Undefined until that email is sent.
+   */
+  followUpSendableAt(followUp: Outreach): Date | undefined {
+    if (followUp.followUpOf === null) return undefined;
+    const previous = followUp.followUpStep === 2
+      ? this.getFollowUp(followUp.followUpOf, 1)
+      : this.getOutreach(followUp.followUpOf);
+    return previous?.status === "SENT" && previous.sentAt ? followUpDueAt(previous.sentAt) : undefined;
   }
 
   listFollowUps(outreachId: number): Outreach[] {
@@ -985,7 +1009,8 @@ export class OutboundStore {
       const parent = this.requireOutreach(draft.followUpOf);
       if (parent.status === "REPLIED") throw new WorkflowError("The prospect replied; this follow-up will not be sent");
       if (parent.status !== "SENT" || !parent.sentAt) throw new WorkflowError("The first-touch email has not been sent");
-      const due = followUpDueAt(parent.sentAt);
+      const due = this.followUpSendableAt(draft);
+      if (!due) throw new WorkflowError("Follow-up 1 must be sent before Follow-up 2");
       if (Date.now() < due.getTime()) {
         throw new WorkflowError(`This follow-up is not due until ${formatDueAt(due)}`);
       }
@@ -1336,7 +1361,8 @@ function outreachFromRow(row: Row): Outreach {
     sentAt: nullableText(row, "sent_at"), gmailThreadId: nullableText(row, "gmail_thread_id"),
     researchId: nullableInteger(row, "research_id"), reviewedAt: nullableText(row, "reviewed_at"),
     approvedRecipient: nullableText(row, "approved_recipient"), approvedSubject: nullableText(row, "approved_subject"),
-    approvedBody: nullableText(row, "approved_body"), followUpOf: nullableInteger(row, "follow_up_of") };
+    approvedBody: nullableText(row, "approved_body"), followUpOf: nullableInteger(row, "follow_up_of"),
+    followUpStep: nullableInteger(row, "follow_up_step") as Outreach["followUpStep"] };
 }
 function emailDeliveryFromRow(row: Row): EmailDelivery {
   return {

@@ -142,8 +142,9 @@ function workflowPrompt(request: WorkflowRequest): string {
         `Generate follow-up drafts for campaign ${request.campaignId}.`,
         `Generate ONLY for these checked first-touch outreach IDs: ${JSON.stringify(request.outreachIds)}.`,
         "Do not draft for any other email, even if it is eligible. Do not expand the selection.",
-        "Use createFollowUp({outreachId, body}); the subject and cited signal are inherited from the first touch.",
-        "Follow the Follow-up 1 rules in docs/EMAIL_RULES.md. Never claim the recipient read, opened, or ignored the first email.",
+        "For each ID, nextFollowUpStep(outreachId) says which follow-up to write: 1 (the demo-link email) or 2 (the closing email). Follow that step's rules in docs/EMAIL_RULES.md.",
+        "Use createFollowUp({outreachId, body}); the step, subject, and cited signal are set automatically so it threads under the first touch.",
+        "Never claim the recipient read, opened, clicked, or ignored an earlier email.",
         "Keep every follow-up in DRAFT state. Do not approve, schedule, or send anything.",
       ].join(" ");
   }
@@ -206,7 +207,7 @@ export function validateRequest(store: OutboundStore, request: WorkflowRequest):
     }
     const allowed = new Set(listFollowUpCandidates(store, request.campaignId).map(({ id }) => id));
     if (request.outreachIds.some((id) => !Number.isSafeInteger(id) || !allowed.has(id))) {
-      throw new WorkflowError("Every selected email must belong to this campaign, be SENT without a reply, keep an eligible prospect, and have no follow-up");
+      throw new WorkflowError("Every selected email must belong to this campaign, be SENT without a reply, keep an eligible prospect, and be ready for its next follow-up (none yet, or Follow-up 1 sent and no Follow-up 2)");
     }
   }
   if (request.kind === "DRAFT_REWRITE") {
@@ -218,12 +219,12 @@ export function validateRequest(store: OutboundStore, request: WorkflowRequest):
   }
 }
 
-/** Sent first-touch emails in a campaign that can still receive a follow-up draft. */
+/** Sent first-touch emails in a campaign that can receive their next follow-up draft. */
 export function listFollowUpCandidates(store: OutboundStore, campaignId: number): Outreach[] {
   const eligible = new Set(store.listEligibleProspects(campaignId)
     .filter(({ id }) => store.getProspectResearch(id)?.status === "READY").map(({ id }) => id));
   return store.listCampaignOutreach(campaignId).filter((outreach) => outreach.status === "SENT"
-    && eligible.has(outreach.contactId) && !store.getFollowUp(outreach.id));
+    && eligible.has(outreach.contactId) && store.nextFollowUpStep(outreach.id) !== undefined);
 }
 
 interface RunnerDependencies {
