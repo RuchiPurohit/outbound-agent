@@ -169,6 +169,21 @@ describe("OutboundStore", () => {
     );
   });
 
+  it("stores only linkedin.com/in/ profiles in the LinkedIn field", () => {
+    const { company } = campaignAndCompany();
+    store.reviewCompany(company.id, "APPROVED");
+    assert.throws(() => store.createContact({ companyId: company.id, name: "Pat Lee",
+      linkedinUrl: "https://example.com/careers" }), /linkedin\.com\/in\//);
+    assert.throws(() => store.createContact({ companyId: company.id, name: "Pat Lee",
+      linkedinUrl: "https://www.linkedin.com/company/example" }), /linkedin\.com\/in\//);
+    const contact = store.createContact({ companyId: company.id, name: "Pat Lee" });
+    assert.equal(contact.linkedinUrl, null);
+    assert.equal(store.recordLinkedinProfile({ contactId: contact.id,
+      linkedinUrl: "https://ca.linkedin.com/in/pat-lee/" }).linkedinUrl, "https://ca.linkedin.com/in/pat-lee/");
+    assert.throws(() => store.recordLinkedinProfile({ contactId: contact.id,
+      linkedinUrl: "https://www.linkedin.com/in/someone-else" }), /different LinkedIn profile/);
+  });
+
   it("reviews multiple contacts atomically", () => {
     const { company } = campaignAndCompany();
     store.reviewCompany(company.id, "APPROVED");
