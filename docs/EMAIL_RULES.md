@@ -191,8 +191,8 @@ to make your phone the second screen.
 capability, e.g. the message.created webhook for notifying people outside the
 product.>
 
-That's the realtime layer <Company> wouldn't have to build. The code behind it
-is on the same page.
+ConvoKit gives you a ready-made chat layer, so <Company> can add this in a day
+instead of building it from scratch. The code behind it is on the same page.
 
 If it's not a priority right now, a quick "not now" is completely fine.
 
