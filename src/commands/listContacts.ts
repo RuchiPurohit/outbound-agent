@@ -22,7 +22,7 @@ if (campaignId !== undefined && (!Number.isSafeInteger(campaignId) || campaignId
         Title: contact.title ?? "UNKNOWN",
         Category: contact.roleCategory ?? "UNKNOWN",
         Score: contact.roleScore ?? "UNKNOWN",
-        Profile: contact.linkedinUrl ?? "UNKNOWN",
+        LinkedIn: contact.linkedinUrl ?? "UNKNOWN",
         Status: contact.status,
         Email: contact.email ?? "UNKNOWN",
         EmailStatus: contact.emailStatus,

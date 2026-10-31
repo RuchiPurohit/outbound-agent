@@ -53,7 +53,9 @@ For every selected person, collect:
 - full name
 - exact current title
 - company
-- LinkedIn or another public professional profile, if verified
+- LinkedIn profile URL (`https://www.linkedin.com/in/...`), only when verified to
+  be this person; otherwise leave it unset. Never put the role source, a company
+  page, a blog post, or another site in this field; those belong in the source URL
 - role category
 - role score from 0 to 100
 - concise reason this person is relevant to ConvoKit

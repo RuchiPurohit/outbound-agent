@@ -55,6 +55,19 @@ function checkPublicUrl(value: string | null, label: string): void {
   }
 }
 
+/** A personal LinkedIn profile URL; role sources and company pages are not profiles. */
+export function checkedLinkedinProfile(value: string): string {
+  const url = value.trim();
+  let parsed: URL;
+  try { parsed = new URL(url); }
+  catch { throw new WorkflowError("LinkedIn profile must be a linkedin.com/in/ URL"); }
+  if (parsed.protocol !== "https:" || !/(^|\.)linkedin\.com$/.test(parsed.hostname)
+    || !/^\/in\/[^/]+\/?$/.test(parsed.pathname)) {
+    throw new WorkflowError("LinkedIn profile must be a linkedin.com/in/ URL; record other pages as research sources");
+  }
+  return url;
+}
+
 function companyEmailDomain(value: string): string {
   const domain = value.trim().toLowerCase().replace(/^www\./, "");
   if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(domain)) {
@@ -323,10 +336,21 @@ export class OutboundStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'DISCOVERED')
     `).run(
       input.companyId, input.name, input.title ?? null, input.roleCategory ?? null,
-      input.roleScore ?? null, input.linkedinUrl ?? null, input.email ?? null,
+      input.roleScore ?? null, input.linkedinUrl ? checkedLinkedinProfile(input.linkedinUrl) : null, input.email ?? null,
       input.emailStatus ?? "UNKNOWN",
     );
     return this.getContact(Number(result.lastInsertRowid))!;
+  }
+
+  /** Sets a contact's verified LinkedIn profile, replacing any non-LinkedIn page stored there. */
+  recordLinkedinProfile(input: { contactId: number; linkedinUrl: string }): Contact {
+    const linkedinUrl = checkedLinkedinProfile(input.linkedinUrl);
+    const contact = this.requireContact(input.contactId);
+    if (contact.linkedinUrl && contact.linkedinUrl !== linkedinUrl && /linkedin\.com\/in\//.test(contact.linkedinUrl)) {
+      throw new WorkflowError("This contact already has a different LinkedIn profile");
+    }
+    this.db.prepare("UPDATE contacts SET linkedin_url = ? WHERE id = ?").run(linkedinUrl, contact.id);
+    return this.getContact(contact.id)!;
   }
 
   getContact(id: number): Contact | undefined {
