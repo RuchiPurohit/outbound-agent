@@ -28,6 +28,7 @@ function sequence(store: OutboundStore, sent: Outreach) {
 /** Badge text and class describing where a sent email is in its follow-up sequence. */
 function followUpState(sent: Outreach, state: ReturnType<typeof sequence>): { label: string; css: string } {
   if (sent.status === "REPLIED") return { label: "Replied", css: "APPROVED" };
+  if (sent.status === "BOUNCED") return { label: "Bounced", css: "REJECTED" };
   if (state.done) return { label: "Both follow-ups sent", css: "SENT" };
   const name = `Follow-up ${state.step}`;
   if (state.dueAt.getTime() <= Date.now()) return { label: state.draft ? `${name} due` : `${name} due · no draft`, css: "PENDING" };
@@ -41,9 +42,9 @@ function followUpState(sent: Outreach, state: ReturnType<typeof sequence>): { la
 export function renderFollowUps(store: OutboundStore, campaignId: number, openId?: number): string {
   const active = store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING");
   const sent = store.listCampaignOutreach(campaignId)
-    .filter(({ status, sentAt }) => (status === "SENT" || status === "REPLIED") && sentAt)
+    .filter(({ status, sentAt }) => (status === "SENT" || status === "REPLIED" || status === "BOUNCED") && sentAt)
     .map((outreach) => ({ outreach, state: sequence(store, outreach) }))
-    .sort((a, b) => Number(a.outreach.status === "REPLIED" || a.state.done) - Number(b.outreach.status === "REPLIED" || b.state.done)
+    .sort((a, b) => Number(a.outreach.status !== "SENT" || a.state.done) - Number(b.outreach.status !== "SENT" || b.state.done)
       || a.state.dueAt.getTime() - b.state.dueAt.getTime());
   const candidates = new Set(listFollowUpCandidates(store, campaignId).map(({ id }) => id));
 
@@ -63,14 +64,16 @@ export function renderFollowUps(store: OutboundStore, campaignId: number, openId
   const cards = sent.map(({ outreach, state }) => {
     const badge = followUpState(outreach, state);
     const rejected = store.listFollowUps(outreach.id).filter(({ status }) => status === "REJECTED").length;
-    const pending = outreach.status === "REPLIED" || state.done || state.draft
+    const pending = outreach.status !== "SENT" || state.done || state.draft
       ? ""
       : `<p class="muted">${candidates.has(outreach.id) ? `No Follow-up ${state.step} drafted yet. Check this email under Draft follow-ups above.` : "This prospect is no longer eligible for a follow-up draft."}${rejected ? ` ${rejected} rejected follow-up(s) hidden.` : ""}</p>`;
-    const timeline = state.step === 2
+    const timeline = outreach.status === "BOUNCED"
+      ? `First email sent ${escapeHtml(new Date(outreach.sentAt!).toLocaleString())} and bounced, so no follow-up will be sent. ${escapeHtml(outreach.bounceDetail)}`
+      : state.step === 2
       ? `Follow-up 1 sent ${escapeHtml(new Date(state.first!.sentAt!).toLocaleString())}.${state.done ? "" : ` Follow-up 2 becomes sendable ${escapeHtml(formatDueAt(state.dueAt))}, ${FOLLOW_UP_DELAY_DAYS} days later.`}`
       : `First email sent ${escapeHtml(new Date(outreach.sentAt!).toLocaleString())}. Follow-up 1 becomes sendable ${escapeHtml(formatDueAt(state.dueAt))}, ${FOLLOW_UP_DELAY_DAYS} days later.`;
     const replied = outreach.status === "SENT" && !state.done
-      ? `<form method="post" action="/campaigns/${campaignId}/outreach/${outreach.id}/replied" style="margin-top:14px"><button class="secondary" ${active ? "disabled" : ""}>Mark as replied (cancels follow-ups)</button></form>`
+      ? `<form method="post" action="/campaigns/${campaignId}/outreach/${outreach.id}/replied" style="margin-top:14px"><button class="secondary" ${active ? "disabled" : ""}>Mark as replied (cancels follow-ups)</button></form><form method="post" action="/campaigns/${campaignId}/outreach/${outreach.id}/bounced" style="margin-top:14px"><label><span>Bounce notice (sender, date, reason)</span><input name="detail" maxlength="1000" required></label><button class="secondary" ${active ? "disabled" : ""}>Mark as bounced (cancels follow-ups)</button></form>`
       : "";
     return `<details class="email-draft" id="sent-${outreach.id}"${outreach.id === openId ? " open" : ""}><summary>${label(outreach)} · ${escapeHtml(outreach.subject)} <span class="badge ${badge.css}">${escapeHtml(badge.label)}</span></summary><p class="muted">${timeline}</p><details><summary>First email</summary>${renderOutreachReview(store, campaignId, outreach)}</details>${followUpBlock(state.first, 1)}${followUpBlock(state.second, 2)}${pending}${replied}</details>`;
   }).join("");

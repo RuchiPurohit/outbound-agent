@@ -103,6 +103,27 @@ describe("Follow-ups", () => {
     } finally { f.db.close(); }
   });
 
+  it("cancels follow-ups once the first email is marked as bounced", async () => {
+    const f = await sentFixture();
+    try {
+      const followUp = f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_BODY" });
+      f.store.approveOutreachForSending(followUp.id);
+      f.backdate(8);
+      assert.throws(() => f.store.markOutreachBounced(f.first.id, " "), /bounce notice/);
+      const bounced = f.store.markOutreachBounced(f.first.id, "mailer-daemon · 550 5.1.1 user unknown");
+      assert.equal(bounced.status, "BOUNCED");
+      assert.equal(bounced.bounceDetail, "mailer-daemon · 550 5.1.1 user unknown");
+      assert.ok(bounced.bouncedAt);
+      assert.throws(() => f.store.assertReadyToSend(followUp.id), /bounced/);
+      assert.throws(() => f.store.markOutreachBounced(f.first.id, "again"), /Only SENT/);
+      assert.throws(() => f.store.createFollowUp({ outreachId: f.first.id, body: "x" }), /SENT emails without a reply/);
+      const html = renderFollowUps(f.store, f.campaign.id);
+      assert.match(html, /Bounced/);
+      assert.match(html, /550 5\.1\.1 user unknown/);
+      assert.doesNotMatch(html, /Mark as replied/);
+    } finally { f.db.close(); }
+  });
+
   it("validates follow-up generation selections and scopes the prompt", async () => {
     const f = await sentFixture();
     try {

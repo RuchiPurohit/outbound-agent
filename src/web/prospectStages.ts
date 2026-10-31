@@ -44,7 +44,7 @@ export function renderProspectStages(
   }).join("");
 
   const outreach = contacts.flatMap(({ id }) => store.listOutreach(id))
-    .filter(({ status }) => status !== "SENT" && status !== "REPLIED");
+    .filter(({ status }) => status !== "SENT" && status !== "REPLIED" && status !== "BOUNCED");
   const drafts = outreach.filter(({ status }) => status === "DRAFT");
   const guessedDrafts = drafts.filter(({ contactId }) => store.getContactRecipient(contactId)?.guessed).length;
   const confirmText = `Approve ${drafts.length} draft(s) as READY_TO_SEND?${guessedDrafts ? ` ${guessedDrafts} go to unverified guessed recipients.` : ""} Nothing is sent; each email still needs its own send confirmation.`;
@@ -83,7 +83,7 @@ export function renderOutreachReview(store: OutboundStore, campaignId: number, d
   const dueAt = store.followUpSendableAt(draft);
   const notDue = dueAt !== undefined && Date.now() < dueAt.getTime();
   // Follow-up 2 has no send date until Follow-up 1 itself was sent.
-  const awaitingPrevious = parent !== undefined && parent.status !== "REPLIED" && dueAt === undefined;
+  const awaitingPrevious = parent !== undefined && parent.status === "SENT" && dueAt === undefined;
   const previousEmail = draft.followUpStep === 2 ? "Follow-up 1" : "the first email";
   const recipient = store.getContactRecipient(contact.id);
   const signal = draft.researchId === null ? undefined : store.getResearchRecord(draft.researchId);
@@ -110,6 +110,7 @@ export function renderOutreachReview(store: OutboundStore, campaignId: number, d
       : `${delivery?.error ? `<div class="notice error">${escapeHtml(delivery.error)}</div>` : ""}${approvalMatches
         ? active ? '<p class="muted">Wait for the active workflow before sending.</p>'
           : parent?.status === "REPLIED" ? '<p class="muted">The prospect replied, so this follow-up will not be sent.</p>'
+          : parent?.status === "BOUNCED" ? '<p class="muted">The first email bounced, so this follow-up will not be sent.</p>'
           : awaitingPrevious ? `<p class="muted">Approved. Sending unlocks ${FOLLOW_UP_DELAY_DAYS} days after Follow-up 1 is sent.</p>`
           : notDue ? `<p class="muted">Approved. Sending unlocks ${escapeHtml(formatDueAt(dueAt!))}, ${FOLLOW_UP_DELAY_DAYS} days after ${previousEmail}.</p>`
           : `<a class="button" href="/campaigns/${campaignId}/outreach/${draft.id}/send">Review &amp; send via ${escapeHtml(transportLabel)}</a>`
