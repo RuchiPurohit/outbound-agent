@@ -131,19 +131,18 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
 <script>${LIVE_REFRESH_SCRIPT}</script></body></html>`;
 }
 
-/** First-touch READY_TO_SEND emails that pass every send check now, with what would be sent. */
-function sendBatch(campaignId: number, sender: string) {
-  const deliveries = store.listEmailDeliveries();
-  return store.listCampaignOutreach(campaignId).flatMap((outreach) => {
-    if (outreach.status !== "READY_TO_SEND") return [];
-    if (deliveries.some((item) => item.outreachId === outreach.id && item.status !== "FAILED")) return [];
-    try { store.assertReadyToSend(outreach.id); } catch { return []; }
+type SendScope = "first-touch" | "follow-ups";
+
+/** READY_TO_SEND emails of one scope that pass every send check now, with what would be sent. */
+function sendBatch(campaignId: number, sender: string, scope: SendScope = "first-touch") {
+  return store.listSendableOutreach(campaignId, scope).map((outreach) => {
     const contact = store.getContact(outreach.contactId)!;
     const company = store.getCompany(contact.companyId)!;
     const recipient = store.getContactRecipient(contact.id)!;
-    return [{ outreach, label: `${contact.name} · ${company.name}`, guessed: recipient.guessed,
+    const step = outreach.followUpOf === null ? "" : ` · Follow-up ${outreach.followUpStep}`;
+    return { outreach, label: `${contact.name} · ${company.name}${step}`, guessed: recipient.guessed,
       guessBadge: guessVerificationBadge(recipient.verification, contact.guessedEmailVerificationDetail),
-      expected: { fromEmail: sender, toEmail: recipient.address, subject: outreach.subject, body: outreach.body } }];
+      expected: { fromEmail: sender, toEmail: recipient.address, subject: outreach.subject, body: outreach.body } };
   });
 }
 
@@ -177,6 +176,7 @@ function campaignReturn(campaignId: number, action: string): { path: string; par
   }
   if (draftId) return { path, params: { draftId }, anchor: `email-${draftId}` };
   if (action === "outreach/send-all") return { path, params: {}, anchor: "draft-review" };
+  if (action === "follow-ups/send-all") return { path: `${path}/follow-ups`, params: {}, anchor: "sent-emails" };
   if (action === "outreach/approve-all") return { path, params: {}, anchor: "draft-review" };
   if (action === "contacts/recheck-angles" || /^contacts\/\d+\/recheck-angle$/.test(action)) return { path, params: {}, anchor: "prospect-research" };
   if (/^contacts\/\d+\/email$/.test(action)) return { path, params: {}, anchor: "email-discovery" };
@@ -264,7 +264,7 @@ function sectionNav(tab: keyof typeof SECTIONS): string {
 function followUpsPage(campaign: Campaign, url: URL): string {
   const isRunning = store.listWorkflowRuns(campaign.id).some(({ status }) => status === "PENDING" || status === "RUNNING");
   const running = isRunning ? `<div class="notice">A workflow is running. This page refreshes every 3s; output is under Workflow runs on the <a href="/campaigns/${campaign.id}#runs">Pipeline</a> tab.</div>` : "";
-  return layout(`${campaign.name} · Follow-ups`, `${campaignHeader(campaign, url, "follow-ups")}${running}<div class="grid">${renderFollowUps(store, campaign.id, Number(url.searchParams.get("open")) || undefined)}</div>`, { refreshing: isRunning });
+  return layout(`${campaign.name} · Follow-ups`, `${campaignHeader(campaign, url, "follow-ups")}${running}<div class="grid">${renderFollowUps(store, campaign.id, Number(url.searchParams.get("open")) || undefined, sendQueueStatus(campaign.id))}</div>`, { refreshing: isRunning || isSending(campaign.id) });
 }
 
 function campaignPage(campaign: Campaign, url: URL): string {
@@ -410,19 +410,24 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     } catch (error) { redirect(response, "/gmail", { error: messageOf(error) }); return; }
   }
 
-  const sendAllPreview = url.pathname.match(/^\/campaigns\/(\d+)\/send-all$/);
+  const sendAllPreview = url.pathname.match(/^\/campaigns\/(\d+)\/(follow-ups\/)?send-all$/);
   if (request.method === "GET" && sendAllPreview) {
     const campaignId = Number(sendAllPreview[1]);
+    const followUps = Boolean(sendAllPreview[2]);
     if (!store.getCampaign(campaignId)) throw new WorkflowError("Campaign not found");
     const sender = emailTransport.connectedEmail();
     if (!sender) { redirect(response, "/gmail", { error: `Configure ${emailTransport.label} before sending approved emails` }); return; }
     if (isSending(campaignId)) throw new WorkflowError("A send queue is already running for this campaign");
-    const batch = sendBatch(campaignId, sender);
-    if (batch.length === 0) throw new WorkflowError("No READY_TO_SEND emails can be sent right now");
+    const batch = sendBatch(campaignId, sender, followUps ? "follow-ups" : "first-touch");
+    if (batch.length === 0) {
+      throw new WorkflowError(followUps ? "No approved follow-ups are due to send right now" : "No READY_TO_SEND emails can be sent right now");
+    }
     const guessed = batch.filter(({ guessed }) => guessed).length;
     const items = batch.map(({ outreach, label, expected, guessed, guessBadge }) => `<details class="email-draft"><summary>${escapeHtml(label)} · <strong>${escapeHtml(expected.toEmail)}</strong>${guessed ? ` <span class="badge UNKNOWN">Guessed · unverified</span> ${guessBadge}` : ""} · ${escapeHtml(expected.subject)}</summary><pre class="email-preview">${escapeHtml(expected.body)}</pre></details><input type="hidden" name="ids" value="${outreach.id}"><input type="hidden" name="sig-${outreach.id}" value="${signature("outreach", outreach.id, expected)}">`).join("");
     const gap = Math.round(SEND_QUEUE_GAP_MS / 1000);
-    send(response, 200, layout("Confirm sending all", `<a href="/campaigns/${campaignId}#draft-review">← Emails</a><section class="card" style="margin-top:18px"><h1>Confirm sending ${batch.length} email(s)</h1><p><strong>From:</strong> ${escapeHtml(sender)}</p>${guessed ? `<div class="notice error"><strong>Warning:</strong> ${guessed} of these go to guessed, unverified addresses. They may bounce or reach someone else.</div>` : ""}<p class="muted">Expand any email to read it. They are sent one after another, ${gap}s apart. Each is re-checked just before sending; if its approval, recipient, or content changed, or a send fails, the queue stops and the rest stay READY_TO_SEND.</p><form method="post" action="/campaigns/${campaignId}/outreach/send-all">${items}<div class="notice">This sends real emails to these prospects. Sending cannot be undone by this dashboard.</div><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending each exact approved email above to its recipient${guessed ? ", knowing some addresses are guessed and unverified" : ""}.</label><button>Send ${batch.length} email(s)</button></form></section>`)); return;
+    const backLink = followUps ? `<a href="/campaigns/${campaignId}/follow-ups#sent-emails">← Sent &amp; follow-ups</a>` : `<a href="/campaigns/${campaignId}#draft-review">← Emails</a>`;
+    const threading = followUps ? " Each follow-up is sent as a reply in its first email's thread. If a prospect is marked as replied or a first email as bounced before its turn, the queue stops there." : "";
+    send(response, 200, layout(followUps ? "Confirm sending follow-ups" : "Confirm sending all", `${backLink}<section class="card" style="margin-top:18px"><h1>Confirm sending ${batch.length} ${followUps ? "follow-up" : "email"}(s)</h1><p><strong>From:</strong> ${escapeHtml(sender)}</p>${guessed ? `<div class="notice error"><strong>Warning:</strong> ${guessed} of these go to guessed, unverified addresses. They may bounce or reach someone else.</div>` : ""}<p class="muted">Expand any email to read it. They are sent one after another, ${gap}s apart. Each is re-checked just before sending; if its approval, recipient, or content changed, or a send fails, the queue stops and the rest stay READY_TO_SEND.${threading}</p><form method="post" action="/campaigns/${campaignId}/${followUps ? "follow-ups" : "outreach"}/send-all">${items}<div class="notice">This sends real emails to these prospects. Sending cannot be undone by this dashboard.</div><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending each exact approved email above to its recipient${guessed ? ", knowing some addresses are guessed and unverified" : ""}.</label><button>Send ${batch.length} email(s)</button></form></section>`)); return;
   }
 
   const sendPreview = url.pathname.match(/^\/campaigns\/(\d+)\/outreach\/(\d+)\/send$/);
@@ -559,13 +564,14 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }); return;
     }
 
-    if (action === "outreach/send-all") {
+    if (action === "outreach/send-all" || action === "follow-ups/send-all") {
+      const scope: SendScope = action === "follow-ups/send-all" ? "follow-ups" : "first-touch";
       const sender = emailTransport.connectedEmail();
       if (!sender || form.get("confirm") !== "yes") throw new WorkflowError("Confirm sending to start the queue");
       if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {
         throw new WorkflowError("Wait for the active workflow to finish before sending");
       }
-      const confirmed = new Map(sendBatch(campaignId, sender).map((item) => [item.outreach.id, item]));
+      const confirmed = new Map(sendBatch(campaignId, sender, scope).map((item) => [item.outreach.id, item]));
       const ids = form.getAll("ids").map((value) => requirePositiveId(value, "email ID"));
       // Every email must still match exactly what the confirmation page showed.
       const queue = ids.map((id) => {
@@ -578,14 +584,14 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       if (queue.length === 0) throw new WorkflowError("No emails were confirmed");
       void startSendQueue(campaignId, queue.map(({ outreach, label }) => ({ outreachId: outreach.id, label })),
         async (outreachId) => {
-          const item = sendBatch(campaignId, sender).find(({ outreach }) => outreach.id === outreachId);
+          const item = sendBatch(campaignId, sender, scope).find(({ outreach }) => outreach.id === outreachId);
           const original = confirmed.get(outreachId)!;
           if (!item || JSON.stringify(item.expected) !== JSON.stringify(original.expected)) {
             throw new Error("Its approval, recipient, or content changed after confirmation; review it again");
           }
           await emailSending.sendApproved(outreachId, item.expected);
         });
-      back({ notice: `Sending ${queue.length} email(s) one after another, ${Math.round(SEND_QUEUE_GAP_MS / 1000)}s apart. Progress is shown under Emails.` }); return;
+      back({ notice: `Sending ${queue.length} ${scope === "follow-ups" ? "follow-up" : "email"}(s) one after another, ${Math.round(SEND_QUEUE_GAP_MS / 1000)}s apart. Progress is shown under ${scope === "follow-ups" ? "Sent emails" : "Emails"}.` }); return;
     }
     if (action === "outreach/approve-all") {
       if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {

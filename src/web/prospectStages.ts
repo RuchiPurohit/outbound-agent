@@ -51,12 +51,7 @@ export function renderProspectStages(
   const approveAll = drafts.length
     ? `<form method="post" action="/campaigns/${campaignId}/outreach/approve-all" onsubmit="return confirm(this.dataset.confirm)" data-confirm="${escapeHtml(confirmText)}">${drafts.map(({ id }) => `<input type="hidden" name="ids" value="${id}">`).join("")}<button ${active ? "disabled" : ""}>Approve all drafts → Ready to send (${drafts.length})</button></form>`
     : "";
-  const deliveries = store.listEmailDeliveries();
-  const sendable = outreach.filter((email) => {
-    if (email.status !== "READY_TO_SEND" || email.followUpOf !== null) return false;
-    if (deliveries.some((item) => item.outreachId === email.id && item.status !== "FAILED")) return false;
-    try { store.assertReadyToSend(email.id); return true; } catch { return false; }
-  }).length;
+  const sendable = store.listSendableOutreach(campaignId, "first-touch").length;
   const sendAll = sendable && !sendStatus.includes("data-sending")
     ? `<a class="button" href="/campaigns/${campaignId}/send-all">Send all ready emails (${sendable})</a>` : "";
   const emails = outreach.map((draft) => {

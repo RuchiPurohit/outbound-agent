@@ -1056,6 +1056,22 @@ export class OutboundStore {
     return draft;
   }
 
+  /**
+   * READY_TO_SEND emails in a campaign that pass every send check right now and have no
+   * active, sent, or uncertain delivery: first touches, or follow-ups whose send date has come.
+   */
+  listSendableOutreach(campaignId: number, scope: "first-touch" | "follow-ups"): Outreach[] {
+    const firstTouches = this.listCampaignOutreach(campaignId);
+    const candidates = scope === "first-touch" ? firstTouches
+      : firstTouches.flatMap(({ id }) => this.listFollowUps(id));
+    const deliveries = this.listEmailDeliveries();
+    return candidates.filter((email) => {
+      if (email.status !== "READY_TO_SEND") return false;
+      if (deliveries.some((item) => item.outreachId === email.id && item.status !== "FAILED")) return false;
+      try { this.assertReadyToSend(email.id); return true; } catch { return false; }
+    });
+  }
+
   withdrawOutreachApproval(id: number): Outreach {
     return this.db.transaction(() => {
       const draft = this.requireOutreach(id);

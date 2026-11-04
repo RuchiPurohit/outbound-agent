@@ -269,10 +269,11 @@ marked as replied and the first touch has not been marked as bounced.
 
 Gmail sending is a deterministic dashboard operation, never a research task.
 Only an explicit human send confirmation may dispatch READY_TO_SEND outreach.
-The dashboard's Send all ready emails page is one such confirmation: it lists
-every email and recipient (guessed ones labelled), then sends them one at a
-time in-process, re-checking each just before dispatch and stopping at the
-first failure.
+The dashboard's Send all ready emails page and the Sent & follow-ups tab's Send
+all approved follow-ups page are such confirmations: each lists every email and
+recipient (guessed ones labelled), then sends them one at a time in-process,
+re-checking each just before dispatch and stopping at the first failure. The
+follow-up batch includes only follow-ups whose send date has passed.
 Never read .env, Gmail OAuth credentials, or tokens during research/generation.
 Never invoke sending, approval withdrawal, or delivery-state operations from
 a research, generation, or rewrite workflow.

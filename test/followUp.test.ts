@@ -89,6 +89,28 @@ describe("Follow-ups", () => {
     } finally { f.db.close(); }
   });
 
+  it("offers Send all approved follow-ups only for follow-ups that are due and sendable", async () => {
+    const f = await sentFixture();
+    try {
+      const followUp = f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_BODY" });
+      const sendAll = /href="\/campaigns\/\d+\/follow-ups\/send-all">Send all approved follow-ups \(1\)/;
+      assert.deepEqual(f.store.listSendableOutreach(f.campaign.id, "follow-ups"), []);
+      f.store.approveOutreachForSending(followUp.id);
+      assert.deepEqual(f.store.listSendableOutreach(f.campaign.id, "follow-ups"), []);
+      const early = renderFollowUps(f.store, f.campaign.id);
+      assert.doesNotMatch(early, sendAll);
+      assert.match(early, /1 approved follow-up\(s\) are waiting for their send date/);
+      f.backdate(7);
+      assert.deepEqual(f.store.listSendableOutreach(f.campaign.id, "follow-ups").map(({ id }) => id), [followUp.id]);
+      assert.deepEqual(f.store.listSendableOutreach(f.campaign.id, "first-touch"), []);
+      assert.match(renderFollowUps(f.store, f.campaign.id), sendAll);
+      assert.doesNotMatch(renderFollowUps(f.store, f.campaign.id, undefined, '<div class="notice" data-sending>'), sendAll);
+      f.store.markOutreachReplied(f.first.id);
+      assert.deepEqual(f.store.listSendableOutreach(f.campaign.id, "follow-ups"), []);
+      assert.doesNotMatch(renderFollowUps(f.store, f.campaign.id), sendAll);
+    } finally { f.db.close(); }
+  });
+
   it("cancels the follow-up once the prospect is marked as replied", async () => {
     const f = await sentFixture();
     try {
