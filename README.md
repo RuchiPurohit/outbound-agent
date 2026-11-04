@@ -197,7 +197,9 @@ threaded follow-ups, drafted one at a time for the emails you check:
 Both follow the templates in [docs/EMAIL_RULES.md](docs/EMAIL_RULES.md), stay
 `DRAFT` until you approve them, and are cancelled by **Mark as replied**.
 
-Once approved follow-ups are due, **Send all approved follow-ups** on the Sent
+**Approve all follow-up drafts** on the Sent emails card approves every
+follow-up draft shown there (after a browser confirmation) as `READY_TO_SEND`;
+it never sends anything. Once approved follow-ups are due, **Send all approved follow-ups** on the Sent
 emails card opens the same kind of batch confirmation as **Send all ready
 emails**: it lists every follow-up and recipient (guessed ones labelled), then
 sends them one at a time as threaded replies, re-checking each just before

@@ -10,7 +10,7 @@ import {
 } from "../workflows/runner.js";
 import { guessVerificationBadge, renderEmailPipelineStatus, renderEmailResults } from "./emailResults.js";
 import { renderProspectStages } from "./prospectStages.js";
-import { countDueFollowUps, renderFollowUps } from "./followUps.js";
+import { countDueFollowUps, listFollowUpDrafts, renderFollowUps } from "./followUps.js";
 import { FileTokenStore, GmailClient } from "../gmail/client.js";
 import { EmailSending } from "../gmail/sending.js";
 import { isSending, SEND_QUEUE_GAP_MS, sendQueueState, startSendQueue } from "../gmail/sendQueue.js";
@@ -178,6 +178,7 @@ function campaignReturn(campaignId: number, action: string): { path: string; par
   if (action === "outreach/send-all") return { path, params: {}, anchor: "draft-review" };
   if (action === "follow-ups/send-all") return { path: `${path}/follow-ups`, params: {}, anchor: "sent-emails" };
   if (action === "outreach/approve-all") return { path, params: {}, anchor: "draft-review" };
+  if (action === "follow-ups/approve-all") return { path: `${path}/follow-ups`, params: {}, anchor: "sent-emails" };
   if (action === "contacts/recheck-angles" || /^contacts\/\d+\/recheck-angle$/.test(action)) return { path, params: {}, anchor: "prospect-research" };
   if (/^contacts\/\d+\/email$/.test(action)) return { path, params: {}, anchor: "email-discovery" };
   if (action === "workflows/follow-up-generation") return { path: `${path}/follow-ups`, params: {}, anchor: "generate-follow-ups" };
@@ -593,15 +594,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         });
       back({ notice: `Sending ${queue.length} ${scope === "follow-ups" ? "follow-up" : "email"}(s) one after another, ${Math.round(SEND_QUEUE_GAP_MS / 1000)}s apart. Progress is shown under ${scope === "follow-ups" ? "Sent emails" : "Emails"}.` }); return;
     }
-    if (action === "outreach/approve-all") {
+    if (action === "outreach/approve-all" || action === "follow-ups/approve-all") {
+      const followUps = action === "follow-ups/approve-all";
       if (store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING")) {
         throw new WorkflowError("Wait for the active workflow to finish before reviewing drafts");
       }
       const ids = form.getAll("ids").map((value) => requirePositiveId(value, "draft ID"));
       if (ids.length === 0) throw new WorkflowError("No drafts to approve");
-      // Only the first-touch drafts the reviewer saw on the page; newer drafts need their own review.
-      const campaignDrafts = new Set(store.listCampaignOutreach(campaignId)
-        .filter(({ status }) => status === "DRAFT").map(({ id }) => id));
+      // Only the drafts of this kind the reviewer saw on the page; newer drafts need their own review.
+      const campaignDrafts = new Set((followUps ? listFollowUpDrafts(store, campaignId)
+        : store.listCampaignOutreach(campaignId).filter(({ status }) => status === "DRAFT")).map(({ id }) => id));
       let approved = 0;
       const skipped: string[] = [];
       for (const id of ids) {
@@ -609,7 +611,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         try { store.approveOutreachForSending(id); approved += 1; }
         catch (error) { skipped.push(`#${id}: ${messageOf(error)}`); }
       }
-      back({ notice: `${approved} draft(s) approved and READY_TO_SEND. Nothing was sent.${skipped.length ? ` Skipped ${skipped.length}: ${skipped.join("; ")}` : ""}` }); return;
+      back({ notice: `${approved} ${followUps ? "follow-up " : ""}draft(s) approved and READY_TO_SEND. Nothing was sent.${skipped.length ? ` Skipped ${skipped.length}: ${skipped.join("; ")}` : ""}` }); return;
     }
     const recheck = action.match(/^contacts\/(\d+)\/recheck-angle$/);
     if (recheck || action === "contacts/recheck-angles") {

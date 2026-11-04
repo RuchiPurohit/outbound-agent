@@ -4,7 +4,7 @@ import { openDatabase } from "../src/db/database.js";
 import { OutboundStore } from "../src/db/store.js";
 import { GmailClient, type GmailTokens, type TokenStore } from "../src/gmail/client.js";
 import { EmailSending, TEST_FOLLOW_UP_BODY } from "../src/gmail/sending.js";
-import { renderFollowUps } from "../src/web/followUps.js";
+import { listFollowUpDrafts, renderFollowUps } from "../src/web/followUps.js";
 import { renderProspectStages } from "../src/web/prospectStages.js";
 import { buildPrompt, validateRequest } from "../src/workflows/runner.js";
 
@@ -108,6 +108,23 @@ describe("Follow-ups", () => {
       f.store.markOutreachReplied(f.first.id);
       assert.deepEqual(f.store.listSendableOutreach(f.campaign.id, "follow-ups"), []);
       assert.doesNotMatch(renderFollowUps(f.store, f.campaign.id), sendAll);
+    } finally { f.db.close(); }
+  });
+
+  it("offers Approve all follow-up drafts only for drafts of unreplied sent emails", async () => {
+    const f = await sentFixture();
+    try {
+      const approveAll = /action="\/campaigns\/\d+\/follow-ups\/approve-all"/;
+      assert.doesNotMatch(renderFollowUps(f.store, f.campaign.id), approveAll);
+      const followUp = f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_BODY" });
+      assert.deepEqual(listFollowUpDrafts(f.store, f.campaign.id).map(({ id }) => id), [followUp.id]);
+      const html = renderFollowUps(f.store, f.campaign.id);
+      assert.match(html, approveAll);
+      assert.match(html, new RegExp(`name="ids" value="${followUp.id}"`));
+      assert.match(html, /Approve all follow-up drafts → Ready to send \(1\)/);
+      f.store.markOutreachReplied(f.first.id);
+      assert.deepEqual(listFollowUpDrafts(f.store, f.campaign.id), []);
+      assert.doesNotMatch(renderFollowUps(f.store, f.campaign.id), approveAll);
     } finally { f.db.close(); }
   });
 

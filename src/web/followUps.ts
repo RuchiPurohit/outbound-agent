@@ -38,6 +38,12 @@ function followUpState(sent: Outreach, state: ReturnType<typeof sequence>): { la
   return { label: `${name} due ${day(state.dueAt)} · ${when}`, css: "RUNNING" };
 }
 
+/** Follow-up drafts awaiting review whose first email was sent and has had no reply or bounce. */
+export function listFollowUpDrafts(store: OutboundStore, campaignId: number): Outreach[] {
+  return store.listCampaignOutreach(campaignId).filter(({ status }) => status === "SENT")
+    .flatMap(({ id }) => store.listFollowUps(id)).filter(({ status }) => status === "DRAFT");
+}
+
 /** Sent first-touch emails awaiting a reply, with their scheduled follow-up drafts. */
 export function renderFollowUps(store: OutboundStore, campaignId: number, openId?: number, sendStatus = ""): string {
   const active = store.listWorkflowRuns().some(({ status }) => status === "RUNNING" || status === "PENDING");
@@ -90,10 +96,17 @@ export function renderFollowUps(store: OutboundStore, campaignId: number, openId
   const waitingNote = waiting > 0
     ? `<p class="muted">${waiting} approved follow-up(s) are waiting for their send date, ${FOLLOW_UP_DELAY_DAYS} days after the previous email in their thread, and will join Send all once due.</p>` : "";
 
+  const drafts = listFollowUpDrafts(store, campaignId);
+  const guessedDrafts = drafts.filter(({ contactId }) => store.getContactRecipient(contactId)?.guessed).length;
+  const confirmText = `Approve ${drafts.length} follow-up draft(s) as READY_TO_SEND?${guessedDrafts ? ` ${guessedDrafts} go to unverified guessed recipients.` : ""} Nothing is sent; each follow-up still needs a send confirmation once it is due.`;
+  const approveAll = drafts.length
+    ? `<form method="post" action="/campaigns/${campaignId}/follow-ups/approve-all" onsubmit="return confirm(this.dataset.confirm)" data-confirm="${escapeHtml(confirmText)}">${drafts.map(({ id }) => `<input type="hidden" name="ids" value="${id}">`).join("")}<button ${active ? "disabled" : ""}>Approve all follow-up drafts → Ready to send (${drafts.length})</button></form>`
+    : "";
+
   const due = sent.filter(({ outreach, state }) => outreach.status === "SENT" && !state.done
     && state.dueAt.getTime() <= Date.now()).length;
 
-  return `<section class="card span12" id="generate-follow-ups"><div class="cardhead"><div><span class="eyebrow">Stage 6 · Phase 14</span><h2>Draft follow-ups</h2></div></div><p class="muted">Codex drafts the next threaded follow-up for each checked email, following docs/EMAIL_RULES.md: Follow-up 1 shares the live demo, Follow-up 2 closes the loop. Drafts need your approval, and sending stays manual. Follow-up 1 unlocks ${FOLLOW_UP_DELAY_DAYS} days after the first email and Follow-up 2 ${FOLLOW_UP_DELAY_DAYS} days after Follow-up 1, unless the prospect replied.</p>${generationRows ? `<form method="post" action="/campaigns/${campaignId}/workflows/follow-up-generation">${generationRows}<div class="actions" style="margin-top:12px"><button type="button" class="secondary" data-select ${active ? "disabled" : ""}>Select all</button><button ${active ? "disabled" : ""}>Generate follow-ups for checked emails</button></div></form>` : '<div class="empty">No sent emails are waiting for a follow-up draft.</div>'}</section><section class="card span12" id="sent-emails"><div class="cardhead"><div><span class="eyebrow">Outreach state</span><h2>Sent emails</h2></div><div class="actions" style="align-items:center">${sendAll}<span class="badge${due ? " PENDING" : ""}">${due} due now</span></div></div>${sendStatus}${waitingNote}${cards || '<div class="empty">No emails have been sent in this campaign yet.</div>'}</section>`;
+  return `<section class="card span12" id="generate-follow-ups"><div class="cardhead"><div><span class="eyebrow">Stage 6 · Phase 14</span><h2>Draft follow-ups</h2></div></div><p class="muted">Codex drafts the next threaded follow-up for each checked email, following docs/EMAIL_RULES.md: Follow-up 1 shares the live demo, Follow-up 2 closes the loop. Drafts need your approval, and sending stays manual. Follow-up 1 unlocks ${FOLLOW_UP_DELAY_DAYS} days after the first email and Follow-up 2 ${FOLLOW_UP_DELAY_DAYS} days after Follow-up 1, unless the prospect replied.</p>${generationRows ? `<form method="post" action="/campaigns/${campaignId}/workflows/follow-up-generation">${generationRows}<div class="actions" style="margin-top:12px"><button type="button" class="secondary" data-select ${active ? "disabled" : ""}>Select all</button><button ${active ? "disabled" : ""}>Generate follow-ups for checked emails</button></div></form>` : '<div class="empty">No sent emails are waiting for a follow-up draft.</div>'}</section><section class="card span12" id="sent-emails"><div class="cardhead"><div><span class="eyebrow">Outreach state</span><h2>Sent emails</h2></div><div class="actions" style="align-items:center">${approveAll}${sendAll}<span class="badge${due ? " PENDING" : ""}">${due} due now</span></div></div>${sendStatus}${waitingNote}${cards || '<div class="empty">No emails have been sent in this campaign yet.</div>'}</section>`;
 }
 
 /** Number of sent emails whose next follow-up window has opened and still need action. */
