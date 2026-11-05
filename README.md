@@ -205,6 +205,16 @@ emails**: it lists every follow-up and recipient (guessed ones labelled), then
 sends them one at a time as threaded replies, re-checking each just before
 dispatch. Approved follow-ups that are not yet due are counted but left out.
 
+### Not interested replies
+
+When someone replies "not interested", add their address under **Not interested
+· do not contact** on the home page (one per line or comma-separated, with an
+optional note). In every campaign that person is no longer researched, drafted,
+approved, or sent to, and their sent emails are marked as replied so their
+follow-ups are cancelled. Colleagues at the same company can still be
+contacted. Removing an address lifts the block but leaves replied emails as
+replied.
+
 ### Gmail sending
 
 Follow [Gmail setup](docs/GMAIL_SETUP.md) to configure a Gmail sender. The

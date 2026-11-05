@@ -174,6 +174,13 @@ EMAIL_NOT_FOUND
 
 ## Outreach rules
 
+The home page's do-not-contact list holds addresses that replied "not
+interested". It is human-maintained: never add to or remove from it from a
+research, generation, or rewrite workflow. A listed person is never researched,
+drafted, approved, or sent to in any campaign, and adding them marks their sent
+first touches REPLIED so no follow-up goes out. It blocks only that person, not
+colleagues at the same company.
+
 Do not contact more than 2 people at one company simultaneously.
 
 Every first-touch email requires explicit human approval.

@@ -26,8 +26,11 @@ function sequence(store: OutboundStore, sent: Outreach) {
 }
 
 /** Badge text and class describing where a sent email is in its follow-up sequence. */
-function followUpState(sent: Outreach, state: ReturnType<typeof sequence>): { label: string; css: string } {
-  if (sent.status === "REPLIED") return { label: "Replied", css: "APPROVED" };
+function followUpState(store: OutboundStore, sent: Outreach, state: ReturnType<typeof sequence>): { label: string; css: string } {
+  if (sent.status === "REPLIED") {
+    return store.isContactSuppressed(store.getContact(sent.contactId)!)
+      ? { label: "Not interested · do not contact", css: "REJECTED" } : { label: "Replied", css: "APPROVED" };
+  }
   if (sent.status === "BOUNCED") return { label: "Bounced", css: "REJECTED" };
   if (state.done) return { label: "Both follow-ups sent", css: "SENT" };
   const name = `Follow-up ${state.step}`;
@@ -68,7 +71,7 @@ export function renderFollowUps(store: OutboundStore, campaignId: number, openId
     : "";
 
   const cards = sent.map(({ outreach, state }) => {
-    const badge = followUpState(outreach, state);
+    const badge = followUpState(store, outreach, state);
     const rejected = store.listFollowUps(outreach.id).filter(({ status }) => status === "REJECTED").length;
     const pending = outreach.status !== "SENT" || state.done || state.draft
       ? ""

@@ -221,6 +221,19 @@ function notices(url: URL): string {
   return `<div class="toasts">${error ? `<div class="notice error">${escapeHtml(error)}<button type="button" class="dismiss" aria-label="Dismiss">×</button></div>` : ""}${notice ? `<div class="notice">${escapeHtml(notice)}<button type="button" class="dismiss" aria-label="Dismiss">×</button></div>` : ""}</div>`;
 }
 
+/** Home-page card where the human records addresses that replied "not interested". */
+function doNotContactCard(): string {
+  const suppressions = store.listSuppressions();
+  const rows = suppressions.map((item) => {
+    const matches = store.listSuppressionMatches(item.email).map((contact) => {
+      const company = store.getCompany(contact.companyId);
+      return `${escapeHtml(contact.name)}${company ? ` · ${escapeHtml(company.name)} (campaign ${company.campaignId})` : ""}`;
+    });
+    return `<tr><td><strong>${escapeHtml(item.email)}</strong>${item.note ? `<br><span class="muted">${escapeHtml(item.note)}</span>` : ""}</td><td>${matches.length ? matches.join("<br>") : '<span class="muted">No matching contact yet</span>'}</td><td>${escapeHtml(new Date(item.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }))}</td><td><form method="post" action="/suppressions/${item.id}/delete" onsubmit="return confirm(this.dataset.confirm)" data-confirm="${escapeHtml(`Remove ${item.email} from the do-not-contact list? Emails already marked as replied stay replied.`)}"><button class="secondary">Remove</button></form></td></tr>`;
+  }).join("");
+  return `<section class="card span12" id="do-not-contact"><div class="cardhead"><div><span class="eyebrow">Replies</span><h2>Not interested · do not contact</h2></div><span class="badge">${suppressions.length} address(es)</span></div><p class="muted">Add addresses that replied "not interested". In every campaign, that person is no longer researched, drafted, approved, or sent to, and their sent emails are marked as replied so no follow-up goes out. Colleagues at the same company can still be contacted.</p><form method="post" action="/suppressions"><label><span>Email address(es), one per line or comma-separated</span><textarea name="emails" required maxlength="20000" style="min-height:70px" placeholder="pat@example.com"></textarea></label><label><span>Note (optional)</span><input name="note" maxlength="1000" placeholder="Replied Nov 4: not a priority this year"></label><button>Add to do-not-contact list</button></form>${rows ? `<div class="tablewrap" style="margin-top:16px"><table><thead><tr><th>Email</th><th>Matching contacts</th><th>Added</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}</section>`;
+}
+
 function dashboardPage(url: URL): string {
   const campaigns = store.listCampaigns().reverse();
   const cards = campaigns.map((campaign) => {
@@ -229,7 +242,7 @@ function dashboardPage(url: URL): string {
     return `<a class="card span4 campaign" href="/campaigns/${campaign.id}"><div class="cardhead"><span class="eyebrow">Campaign ${campaign.id}</span><span class="badge ${campaign.status}">${humanize(campaign.status)}</span></div><h2>${escapeHtml(campaign.name)}</h2><p class="muted">${escapeHtml(campaign.segment)}</p><div class="inline"><span><strong>${companies.length}</strong> companies</span><span><strong>${contacts.length}</strong> contacts</span></div></a>`;
   }).join("");
 
-  return layout("Campaigns", `<section><span class="eyebrow">Control center</span><h1>Outbound campaigns</h1><p class="lede">Research, review, and qualify prospects through explicit approval gates.</p></section>${notices(url)}<div class="grid" style="margin-top:24px"><section class="card span4"><div class="cardhead"><h2>New campaign</h2><span class="badge">Step 1</span></div><form method="post" action="/campaigns"><label><span>Name</span><input name="name" required placeholder="Developer tools · North America"></label><label><span>Target segment</span><textarea name="segment" required placeholder="Developer tools and B2B SaaS companies in USA and Canada, 20–200 employees."></textarea></label><label><span>Number of companies</span><input name="targetCount" type="number" min="1" max="25" value="5" required></label><label class="inline"><input type="checkbox" name="startResearch" value="yes" checked> Start company discovery now</label><button type="submit">Create campaign</button></form></section>${cards || '<div class="card span8 empty">No campaigns yet. Create one to begin.</div>'}</div>`);
+  return layout("Campaigns", `<section><span class="eyebrow">Control center</span><h1>Outbound campaigns</h1><p class="lede">Research, review, and qualify prospects through explicit approval gates.</p></section>${notices(url)}<div class="grid" style="margin-top:24px"><section class="card span4"><div class="cardhead"><h2>New campaign</h2><span class="badge">Step 1</span></div><form method="post" action="/campaigns"><label><span>Name</span><input name="name" required placeholder="Developer tools · North America"></label><label><span>Target segment</span><textarea name="segment" required placeholder="Developer tools and B2B SaaS companies in USA and Canada, 20–200 employees."></textarea></label><label><span>Number of companies</span><input name="targetCount" type="number" min="1" max="25" value="5" required></label><label class="inline"><input type="checkbox" name="startResearch" value="yes" checked> Start company discovery now</label><button type="submit">Create campaign</button></form></section>${cards || '<div class="card span8 empty">No campaigns yet. Create one to begin.</div>'}${doNotContactCard()}</div>`);
 }
 
 function sourceFor(research: ResearchRecord[], companyId: number, contactId?: number): ResearchRecord | undefined {
@@ -470,6 +483,26 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const campaign = store.getCampaign(Number(campaignMatch[1]));
     if (!campaign) throw new WorkflowError("Campaign not found");
     send(response, 200, campaignMatch[2] ? followUpsPage(campaign, url) : campaignPage(campaign, url)); return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/suppressions") {
+    const form = await formData(request);
+    const emails = (form.get("emails") ?? "").split(/[\s,;]+/);
+    try {
+      const result = store.addSuppressions(emails, form.get("note") ?? undefined);
+      const parts = [`Added ${result.added.length} address(es) to the do-not-contact list.`];
+      if (result.repliedOutreach) parts.push(`${result.repliedOutreach} sent email(s) marked as replied; their follow-ups are cancelled.`);
+      if (result.alreadyListed.length) parts.push(`Already listed: ${result.alreadyListed.join(", ")}.`);
+      redirect(response, "/", { notice: parts.join(" ") }, "do-not-contact"); return;
+    } catch (error) { redirect(response, "/", { error: messageOf(error) }, "do-not-contact"); return; }
+  }
+
+  const suppressionDelete = url.pathname.match(/^\/suppressions\/(\d+)\/delete$/);
+  if (request.method === "POST" && suppressionDelete) {
+    try {
+      const removed = store.removeSuppression(Number(suppressionDelete[1]));
+      redirect(response, "/", { notice: `Removed ${removed.email} from the do-not-contact list.` }, "do-not-contact"); return;
+    } catch (error) { redirect(response, "/", { error: messageOf(error) }, "do-not-contact"); return; }
   }
 
   if (request.method === "POST" && url.pathname === "/campaigns") {

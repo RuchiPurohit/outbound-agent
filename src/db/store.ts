@@ -4,7 +4,7 @@ import { patternCandidates } from "../email/guessPatterns.js";
 import type {
   Campaign, CampaignStatus, ChatFeatureStatus, ChatImplementation, Company, CompanyScoreBreakdown,
   Contact, EmailGuessConfidence, EmailGuessPattern, EmailRecoveryOutcome, EmailStatus, FollowUpStep, GuessVerification, Outreach, ResearchRecord,
-  ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch, EmailDelivery,
+  ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch, EmailDelivery, Suppression,
 } from "./types.js";
 
 type Row = Record<string, unknown>;
@@ -812,7 +812,67 @@ export class OutboundStore {
   listEligibleProspects(campaignId: number): Contact[] {
     return this.listCompanies({ campaignId, status: "APPROVED" })
       .flatMap(({ id }) => this.listContacts(id))
-      .filter((contact) => contact.status === "APPROVED" && !!this.recipientFor(contact));
+      .filter((contact) => contact.status === "APPROVED" && !!this.recipientFor(contact)
+        && !this.isContactSuppressed(contact));
+  }
+
+  /**
+   * Adds addresses that replied "not interested" to the do-not-contact list. Matching contacts in
+   * every campaign are blocked from research, drafting, approval, and sending, and their sent
+   * first-touch emails are marked REPLIED so no follow-up goes out. Colleagues stay contactable.
+   */
+  addSuppressions(emails: string[], note?: string): { added: Suppression[]; alreadyListed: string[]; repliedOutreach: number } {
+    const addresses = [...new Set(emails.map((email) => email.trim().toLowerCase()).filter(Boolean))];
+    if (addresses.length === 0) throw new WorkflowError("Enter at least one email address");
+    if (addresses.length > 200) throw new WorkflowError("Add at most 200 addresses at a time");
+    const invalid = addresses.filter((email) => email.length > 254 || email.includes("..")
+      || !/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(email));
+    if (invalid.length) throw new WorkflowError(`Not a valid email address: ${invalid.join(", ")}`);
+    const cleanNote = note?.trim() || null;
+    if (cleanNote && cleanNote.length > 1000) throw new WorkflowError("Keep the note under 1000 characters");
+    return this.db.transaction(() => {
+      const added: Suppression[] = [];
+      const alreadyListed: string[] = [];
+      let repliedOutreach = 0;
+      for (const email of addresses) {
+        if (this.db.prepare("SELECT 1 FROM suppressions WHERE email = ?").get(email)) { alreadyListed.push(email); continue; }
+        const result = this.db.prepare("INSERT INTO suppressions (email, note, created_at) VALUES (?, ?, ?)")
+          .run(email, cleanNote, now());
+        added.push(this.listSuppressions().find(({ id }) => id === Number(result.lastInsertRowid))!);
+        for (const contact of this.listSuppressionMatches(email)) {
+          for (const outreach of this.listOutreach(contact.id)) {
+            if (outreach.status === "SENT") { this.markOutreachReplied(outreach.id); repliedOutreach += 1; }
+          }
+        }
+      }
+      return { added, alreadyListed, repliedOutreach };
+    })();
+  }
+
+  /** Removes an address from the do-not-contact list; emails already marked REPLIED stay REPLIED. */
+  removeSuppression(id: number): Suppression {
+    const suppression = this.listSuppressions().find((item) => item.id === id);
+    if (!suppression) throw new WorkflowError("Address is not on the do-not-contact list");
+    this.db.prepare("DELETE FROM suppressions WHERE id = ?").run(id);
+    return suppression;
+  }
+
+  listSuppressions(): Suppression[] {
+    return (this.db.prepare("SELECT * FROM suppressions ORDER BY created_at DESC, id DESC").all() as Row[])
+      .map((row) => ({ id: Number(row.id), email: text(row, "email"), reason: "NOT_INTERESTED",
+        note: nullableText(row, "note"), createdAt: text(row, "created_at") }));
+  }
+
+  /** Contacts in any campaign whose sourced or guessed email is this address. */
+  listSuppressionMatches(email: string): Contact[] {
+    return (this.db.prepare("SELECT * FROM contacts WHERE lower(email) = ? OR lower(guessed_email) = ? ORDER BY id")
+      .all(email.toLowerCase(), email.toLowerCase()) as Row[]).map(contactFromRow);
+  }
+
+  isContactSuppressed(contact: Contact): boolean {
+    const addresses = [contact.email, contact.guessedEmail].filter((value): value is string => !!value)
+      .map((value) => value.toLowerCase());
+    return addresses.some((email) => !!this.db.prepare("SELECT 1 FROM suppressions WHERE email = ?").get(email));
   }
 
   listResearchEligibleProspects(campaignId: number): Contact[] {
@@ -1298,6 +1358,9 @@ export class OutboundStore {
     }
     if (!recipient) {
       throw new WorkflowError("Prospect workflow requires a sourced or explicitly guessed business email");
+    }
+    if (this.isContactSuppressed(contact)) {
+      throw new WorkflowError(`${recipient.address} replied not interested and is on the do-not-contact list`);
     }
     return recipient;
   }

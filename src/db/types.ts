@@ -131,6 +131,15 @@ export type FollowUpStep = 1 | 2;
 
 export type DeliveryStatus = "PREPARING" | "SENDING" | "SENT" | "FAILED" | "UNCERTAIN";
 
+/** An address that replied "not interested": never researched, drafted, approved, or sent to again. */
+export interface Suppression {
+  id: number;
+  email: string;
+  reason: "NOT_INTERESTED";
+  note: string | null;
+  createdAt: string;
+}
+
 export interface EmailDelivery {
   id: string;
   provider: string;

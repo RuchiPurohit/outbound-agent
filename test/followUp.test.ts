@@ -128,6 +128,42 @@ describe("Follow-ups", () => {
     } finally { f.db.close(); }
   });
 
+  it("adds not-interested addresses to a do-not-contact list that blocks only that person", async () => {
+    const f = await sentFixture();
+    try {
+      const company = f.store.getCompany(f.contact.companyId)!;
+      const colleague = f.store.createContact({ companyId: company.id, name: "Sam" });
+      f.store.reviewContact(colleague.id, "APPROVED");
+      f.store.recordEmailDiscovery({ contactId: colleague.id, emailStatus: "PUBLICLY_LISTED", email: "sam@example.com", sourceUrl: "https://example.com/team" });
+      const followUp = f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_BODY" });
+      f.store.approveOutreachForSending(followUp.id);
+      f.backdate(8);
+
+      assert.throws(() => f.store.addSuppressions(["not-an-email"]), /Not a valid email/);
+      assert.throws(() => f.store.addSuppressions([" ", ""]), /at least one/);
+      const result = f.store.addSuppressions(["PAT@example.com", "pat@example.com", "nobody@else.com"], "Not a priority");
+      assert.deepEqual(result.added.map(({ email }) => email), ["pat@example.com", "nobody@else.com"]);
+      assert.equal(result.repliedOutreach, 1);
+      assert.deepEqual(f.store.addSuppressions(["pat@example.com"]).alreadyListed, ["pat@example.com"]);
+
+      assert.equal(f.store.getOutreach(f.first.id)?.status, "REPLIED");
+      assert.throws(() => f.store.assertReadyToSend(followUp.id), /replied/);
+      assert.deepEqual(f.store.listSendableOutreach(f.campaign.id, "follow-ups"), []);
+      assert.match(renderFollowUps(f.store, f.campaign.id), /Not interested · do not contact/);
+      assert.deepEqual(f.store.listSuppressionMatches("pat@example.com").map(({ id }) => id), [f.contact.id]);
+      const eligible = f.store.listEligibleProspects(f.campaign.id).map(({ id }) => id);
+      assert.ok(!eligible.includes(f.contact.id));
+      assert.ok(eligible.includes(colleague.id));
+      assert.throws(() => f.store.createOutreach({ contactId: f.contact.id, subject: "Again", body: "x",
+        researchId: f.first.researchId! }), /do-not-contact/);
+
+      f.store.removeSuppression(result.added[0]!.id);
+      assert.ok(f.store.listEligibleProspects(f.campaign.id).some(({ id }) => id === f.contact.id));
+      assert.equal(f.store.getOutreach(f.first.id)?.status, "REPLIED");
+      assert.throws(() => f.store.removeSuppression(result.added[0]!.id), /not on the do-not-contact list/);
+    } finally { f.db.close(); }
+  });
+
   it("cancels the follow-up once the prospect is marked as replied", async () => {
     const f = await sentFixture();
     try {

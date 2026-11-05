@@ -500,4 +500,13 @@ export const migrations: readonly string[] = [
     )
     BEGIN SELECT RAISE(ABORT, 'invalid outreach status transition'); END;
   `,
+  `
+    CREATE TABLE suppressions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL UNIQUE CHECK (email = lower(trim(email)) AND length(email) > 0),
+      reason TEXT NOT NULL DEFAULT 'NOT_INTERESTED' CHECK (reason IN ('NOT_INTERESTED')),
+      note TEXT,
+      created_at TEXT NOT NULL
+    ) STRICT;
+  `,
 ];
