@@ -71,17 +71,18 @@ function sectionCard(client: Client, section: SetupSection, step: number | strin
     ? ` Reads the client's ${STAGE_DOCUMENTS[id].map((doc) => DOCUMENTS.find(({ id: docId }) => docId === doc)!.fileName).join(" and ")}.` : "";
   const source = section.source
     ? `<p class="muted field-help">Based on <code>${escapeHtml(section.source)}</code>, which workflows still use until this ${isDocument(id) ? "document" : "prompt"} replaces it.${reads}</p>` : "";
-  return `<details class="card setup-section" id="section-${section.id}"${open ? " open" : ""}><summary><span class="step-no">${step}</span><span class="setup-title"><strong>${escapeHtml(section.title)}</strong><small>${escapeHtml(section.summary)}</small></span>${statusBadge(missing)}</summary>${source}<form method="post" action="/clients/${client.id}/sections/${section.id}">${nameField}${fields}<div class="actions"><button>Save ${escapeHtml(section.title.toLowerCase())}</button></div></form>${preview}</details>`;
+  const kind = isDocument(id) ? " doc" : isStage(id) ? " stage" : "";
+  return `<details class="card setup-section${kind}" id="section-${section.id}"${open ? " open" : ""}><summary><span class="step-no">${step}</span><span class="setup-title"><strong>${escapeHtml(section.title)}</strong><small>${escapeHtml(section.summary)}</small></span>${statusBadge(missing)}</summary>${source}<form method="post" action="/clients/${client.id}/sections/${section.id}">${nameField}${fields}<div class="actions"><button>Save ${escapeHtml(section.title.toLowerCase())}</button></div></form>${preview}</details>`;
 }
 
 function clientDetail(store: OutboundStore, client: Client, openSection: string | null): string {
   const campaigns = store.listCampaigns().filter(({ clientId }) => clientId === client.id);
-  const chip = (section: SetupSection, mark: string) => {
+  const chip = (section: SetupSection, mark: string, kind: "doc" | "stage") => {
     const missing = missingInputs(section.id, client.setup).length;
-    return `<a class="funnel-step${missing ? " todo" : ""}" href="#section-${section.id}"><span>${mark}</span>${escapeHtml(section.fileName ?? section.title)}</a>`;
+    return `<a class="funnel-step ${kind}${missing ? " todo" : ""}" href="#section-${section.id}"${missing ? ` title="${missing} input(s) missing"` : ""}><span>${mark}</span>${escapeHtml(section.fileName ?? section.title)}</a>`;
   };
   const stages = SECTIONS.filter(({ id }) => id !== "profile");
-  const funnel = `<span class="funnel-label">Documents</span>${DOCUMENTS.map((section) => chip(section, "D")).join("")}<span class="funnel-label">Stages</span>${stages.map((section, index) => chip(section, String(index + 1))).join("")}`;
+  const funnel = `<div class="funnel-row"><span class="funnel-label">Documents</span><div class="funnel-chips">${DOCUMENTS.map((section) => chip(section, "D", "doc")).join("")}</div></div><div class="funnel-row"><span class="funnel-label">Stages</span><div class="funnel-chips">${stages.map((section, index) => chip(section, String(index + 1), "stage")).join("")}</div></div>`;
   const sections = `${sectionCard(client, SECTIONS[0]!, "★", openSection === "profile")}<h3 class="group-title">Documents</h3><p class="muted field-help" style="margin:0">Built from the inputs below plus related profile and stage inputs, so nothing is entered twice.</p>${DOCUMENTS.map((section) => sectionCard(client, section, "D", section.id === openSection)).join("")}<h3 class="group-title">Funnel stages</h3>${stages.map((section, index) => sectionCard(client, section, index + 1, section.id === openSection)).join("")}`;
   return `<div class="cardhead"><div><span class="eyebrow">Client ${client.id} · updated ${escapeHtml(new Date(client.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }))}</span><h2 class="detail-title">${escapeHtml(client.name)}</h2></div></div><p class="muted" style="margin-top:0">Fill in what changes from client to client. Each stage below builds its prompt from these inputs plus the fixed workflow and safety rules the dashboard enforces.</p><div class="actions"><a class="button" href="/campaigns?client=${client.id}">Open campaigns (${campaigns.length})</a><a class="button secondary" href="/campaigns?new=1&amp;client=${client.id}#campaign-detail">New campaign</a></div><nav class="funnel" aria-label="Funnel stages">${funnel}</nav><div class="setup-sections">${sections}</div>`;
 }
