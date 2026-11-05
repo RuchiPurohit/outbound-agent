@@ -509,4 +509,14 @@ export const migrations: readonly string[] = [
       created_at TEXT NOT NULL
     ) STRICT;
   `,
+  `
+    CREATE TABLE clients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE COLLATE NOCASE CHECK (length(trim(name)) > 0),
+      settings TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) STRICT;
+    ALTER TABLE campaigns ADD COLUMN client_id INTEGER REFERENCES clients(id);
+  `,
 ];

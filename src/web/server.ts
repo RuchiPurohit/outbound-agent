@@ -11,6 +11,8 @@ import {
 import { guessVerificationBadge, renderEmailPipelineStatus, renderEmailResults } from "./emailResults.js";
 import { renderProspectStages } from "./prospectStages.js";
 import { countDueFollowUps, listFollowUpDrafts, renderFollowUps } from "./followUps.js";
+import { promptFileName, renderClientsPage } from "./clientsPage.js";
+import { buildStagePrompt, defaultSetup, getSection, parseSectionForm, type SectionId, type StageId } from "../prompts/clientSetup.js";
 import { FileTokenStore, GmailClient } from "../gmail/client.js";
 import { EmailSending } from "../gmail/sending.js";
 import { isSending, SEND_QUEUE_GAP_MS, sendQueueState, startSendQueue } from "../gmail/sendQueue.js";
@@ -24,6 +26,7 @@ const host = "127.0.0.1";
 const port = Number(process.env.OUTBOUND_PORT ?? 3000);
 const db = openDatabase(databasePath);
 const store = new OutboundStore(db);
+store.ensureDefaultClient();
 const interrupted = store.failInterruptedWorkflowRuns();
 const interruptedDeliveries = store.recoverInterruptedDeliveries();
 const appOrigin = `http://${host}:${port}`;
@@ -126,8 +129,8 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
 .campaign-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.campaign-heading .button{flex:none}@media(max-width:600px){.campaign-heading{display:block}.campaign-heading .button{display:inline-block;margin-top:14px}}
 .toasts{position:fixed;top:16px;right:16px;left:16px;margin-left:auto;max-width:420px;z-index:10}.toasts .notice{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;margin:0 0 8px;box-shadow:var(--shadow)}.toasts .dismiss{background:none;color:inherit;padding:0 2px;font-size:16px;line-height:1}.badge.UNCERTAIN,.badge.SENDING,.badge.PREPARING{background:#f2e5c9;color:var(--amber)}
 .manual-email{border-top:0;padding:0;min-width:200px}.manual-email form{margin-top:10px}
-.master{display:grid;grid-template-columns:minmax(260px,360px) 1fr;gap:18px;margin-top:24px;align-items:stretch}.camp-list{padding:14px;display:flex;flex-direction:column;height:0;min-height:100%}.camp-list .cardhead{flex:none;padding:4px 6px 0}.camp-list nav{position:relative;flex:1;min-height:0;overflow-y:auto;margin:0 -6px;padding:0 6px;scrollbar-width:thin}.camp-item{display:block;padding:10px 12px;border-radius:10px;color:var(--ink);border:1px solid transparent}.camp-item+.camp-item{margin-top:4px}.camp-item:hover{text-decoration:none;background:#f3f1ea}.camp-item.active{background:var(--green2);border-color:#b9d3c0}.camp-row{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.camp-row strong{min-width:0;overflow-wrap:anywhere}.camp-seg{display:block;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}.camp-meta{display:block;color:var(--muted);font-size:12px;margin-top:4px}.camp-detail{min-width:0;min-height:520px;scroll-margin-top:16px}.detail-title{font:650 26px/1.15 Georgia,serif;letter-spacing:-.02em;margin-top:4px}.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:18px}.tile{display:block;border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--ink)}.tile:hover{text-decoration:none;border-color:#9eaa9f}.tile strong{display:block;font:650 26px/1 Georgia,serif}.tile span{display:block;font-size:12px;font-weight:650;margin-top:6px}.tile small{display:block;color:var(--muted);font-size:11px;margin-top:2px}.tile.attention{border-color:#e4bd78;background:#fff8ea}.runs{list-style:none;padding:0;margin:10px 0 0;font-size:13px}.runs li{padding:7px 0;border-top:1px solid var(--line)}@media(max-width:800px){.master{grid-template-columns:1fr}.camp-list{height:auto;min-height:0}.camp-list nav{max-height:360px}.camp-detail{min-height:0}}
-</style></head><body${options.refreshing ? " data-live-refresh" : ""}><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/gmail">Email connections</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
+.master{display:grid;grid-template-columns:minmax(260px,360px) 1fr;gap:18px;margin-top:24px;align-items:stretch}.camp-list{padding:14px;display:flex;flex-direction:column;height:0;min-height:100%}.camp-list .cardhead{flex:none;padding:4px 6px 0}.camp-list nav{position:relative;flex:1;min-height:0;overflow-y:auto;margin:0 -6px;padding:0 6px;scrollbar-width:thin}.camp-item{display:block;padding:10px 12px;border-radius:10px;color:var(--ink);border:1px solid transparent}.camp-item+.camp-item{margin-top:4px}.camp-item:hover{text-decoration:none;background:#f3f1ea}.camp-item.active{background:var(--green2);border-color:#b9d3c0}.camp-row{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.camp-row strong{min-width:0;overflow-wrap:anywhere}.camp-seg{display:block;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}.camp-meta{display:block;color:var(--muted);font-size:12px;margin-top:4px}.camp-detail{min-width:0;min-height:520px;scroll-margin-top:16px}.detail-title{font:650 26px/1.15 Georgia,serif;letter-spacing:-.02em;margin-top:4px}.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:18px}.tile{display:block;border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--ink)}.tile:hover{text-decoration:none;border-color:#9eaa9f}.tile strong{display:block;font:650 26px/1 Georgia,serif}.tile span{display:block;font-size:12px;font-weight:650;margin-top:6px}.tile small{display:block;color:var(--muted);font-size:11px;margin-top:2px}.tile.attention{border-color:#e4bd78;background:#fff8ea}.runs{list-style:none;padding:0;margin:10px 0 0;font-size:13px}.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:14px}.chips a{padding:5px 11px;border-radius:999px;background:#e8e5dc;color:var(--ink);font-size:12px;font-weight:650}.chips a:hover{text-decoration:none;background:var(--green2)}.chips a.active{background:var(--green);color:white}.field-help{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:4px}.funnel{display:flex;flex-wrap:wrap;gap:6px;margin:18px 0}.funnel-step{display:inline-flex;align-items:center;gap:6px;padding:6px 10px 6px 6px;border-radius:999px;background:var(--green2);color:var(--green);font-size:12px;font-weight:650}.funnel-step span{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--green);color:white;font-size:11px}.funnel-step.todo{background:#f2e5c9;color:var(--amber)}.funnel-step.todo span{background:var(--amber)}.funnel-step:hover{text-decoration:none;filter:brightness(.97)}.setup-sections{display:grid;gap:12px}.setup-section{padding:0 18px;box-shadow:none;scroll-margin-top:16px}.setup-section>summary{display:flex;align-items:center;gap:12px;padding:14px 0;list-style:none}.setup-section>summary::-webkit-details-marker{display:none}.setup-section[open]>summary{border-bottom:1px solid var(--line);margin-bottom:14px}.setup-section form{padding-bottom:6px}.setup-section .prompt-preview{margin:12px 0 0;padding-bottom:16px}.step-no{flex:none;display:inline-grid;place-items:center;width:28px;height:28px;border-radius:50%;background:#e8e5dc;font-weight:750;font-size:13px}.setup-title{flex:1;min-width:0}.setup-title strong,.setup-title small{display:block}.setup-title small{color:var(--muted);font-weight:400;font-size:12px;margin-top:2px}.setup-check{margin-bottom:4px}.list-input{font:13px/1.5 ui-monospace,SFMono-Regular,monospace}.prompt-preview pre{max-height:520px}code{font:12px ui-monospace,SFMono-Regular,monospace;background:#efece4;padding:1px 5px;border-radius:5px}.runs li{padding:7px 0;border-top:1px solid var(--line)}@media(max-width:800px){.master{grid-template-columns:1fr}.camp-list{height:auto;min-height:0}.camp-list nav{max-height:360px}.camp-detail{min-height:0}}
+</style></head><body${options.refreshing ? " data-live-refresh" : ""}><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/">Clients</a><a href="/campaigns">Campaigns</a><a href="/gmail">Email connections</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
 <script>(function(){var u=new URL(location.href);if(u.searchParams.has('notice')||u.searchParams.has('error')){u.searchParams.delete('notice');u.searchParams.delete('error');history.replaceState(null,'',u.pathname+u.search+u.hash)}})();document.addEventListener('click',function(e){var b=e.target.closest('.toasts .dismiss');if(b)b.parentElement.remove();b=e.target.closest('[data-select]');if(b)b.closest('form').querySelectorAll('input[type="checkbox"]'+(b.dataset.select?'[name="'+b.dataset.select+'"]':'')+':not(:disabled)').forEach(function(c){c.checked=true})});</script>
 <script>${LIVE_REFRESH_SCRIPT}</script></body></html>`;
 }
@@ -260,8 +263,10 @@ function campaignStats(campaign: Campaign) {
   };
 }
 
-function newCampaignForm(): string {
-  return `<div class="cardhead"><div><span class="eyebrow">Step 1</span><h2>New campaign</h2></div></div><form method="post" action="/campaigns"><label><span>Name</span><input name="name" required placeholder="Developer tools · North America"></label><label><span>Target segment</span><textarea name="segment" required placeholder="Developer tools and B2B SaaS companies in USA and Canada, 20–200 employees."></textarea></label><label><span>Number of companies</span><input name="targetCount" type="number" min="1" max="25" value="5" required></label><label class="inline"><input type="checkbox" name="startResearch" value="yes" checked> Start company discovery now</label><button type="submit">Create campaign</button></form>`;
+function newCampaignForm(clientId?: number): string {
+  const clients = store.listClients();
+  const options = clients.map((client) => `<option value="${client.id}"${client.id === clientId ? " selected" : ""}>${escapeHtml(client.name)}</option>`).join("");
+  return `<div class="cardhead"><div><span class="eyebrow">Step 1</span><h2>New campaign</h2></div></div><form method="post" action="/campaigns"><label><span>Client</span><select name="clientId" required>${options}</select><small class="field-help">Its setup on the <a href="/">Clients</a> page describes who to target and how to write.</small></label><label><span>Name</span><input name="name" required placeholder="Developer tools · North America"></label><label><span>Target segment</span><textarea name="segment" required placeholder="Developer tools and B2B SaaS companies in USA and Canada, 20–200 employees."></textarea></label><label><span>Number of companies</span><input name="targetCount" type="number" min="1" max="25" value="5" required></label><label class="inline"><input type="checkbox" name="startResearch" value="yes" checked> Start company discovery now</label><button type="submit">Create campaign</button></form>`;
 }
 
 function campaignDetail(campaign: Campaign): string {
@@ -283,23 +288,30 @@ function campaignDetail(campaign: Campaign): string {
   ].join("");
   const runRows = runs.slice(0, 4).map((run) =>
     `<li><span class="badge ${run.status}">${humanize(run.status)}</span> ${escapeHtml(runLabel(run))}</li>`).join("");
-  return `<div class="cardhead"><div><span class="eyebrow">Campaign ${campaign.id} · created ${escapeHtml(shortDate(campaign.createdAt))}</span><h2 class="detail-title">${escapeHtml(campaign.name)}</h2></div><span class="badge ${campaign.status}">${humanize(campaign.status)}</span></div><p class="muted" style="margin-top:0">${escapeHtml(campaign.segment)}</p><div class="actions"><a class="button" href="${base}">Open pipeline</a><a class="button secondary" href="${base}/follow-ups">Sent &amp; follow-ups${stats.due ? ` (${stats.due} due)` : ""}</a><a class="button secondary" href="${base}/edit">Edit</a></div>${active ? `<div class="notice">${escapeHtml(humanize(active.kind))} is ${humanize(active.status)}. This pane refreshes every 3s.</div>` : ""}<div class="tiles">${tiles}</div><h3 style="margin-top:20px">Recent activity</h3>${runRows ? `<ul class="runs">${runRows}</ul>` : '<p class="muted">No workflow runs yet.</p>'}`;
+  const client = campaign.clientId === null ? undefined : store.getClient(campaign.clientId);
+  const clientLink = client ? ` · <a href="/?client=${client.id}">${escapeHtml(client.name)}</a>` : "";
+  return `<div class="cardhead"><div><span class="eyebrow">Campaign ${campaign.id}${clientLink} · created ${escapeHtml(shortDate(campaign.createdAt))}</span><h2 class="detail-title">${escapeHtml(campaign.name)}</h2></div><span class="badge ${campaign.status}">${humanize(campaign.status)}</span></div><p class="muted" style="margin-top:0">${escapeHtml(campaign.segment)}</p><div class="actions"><a class="button" href="${base}">Open pipeline</a><a class="button secondary" href="${base}/follow-ups">Sent &amp; follow-ups${stats.due ? ` (${stats.due} due)` : ""}</a><a class="button secondary" href="${base}/edit">Edit</a></div>${active ? `<div class="notice">${escapeHtml(humanize(active.kind))} is ${humanize(active.status)}. This pane refreshes every 3s.</div>` : ""}<div class="tiles">${tiles}</div><h3 style="margin-top:20px">Recent activity</h3>${runRows ? `<ul class="runs">${runRows}</ul>` : '<p class="muted">No workflow runs yet.</p>'}`;
 }
 
 function dashboardPage(url: URL): string {
-  const campaigns = store.listCampaigns().reverse();
+  const clients = store.listClients();
+  const clientFilter = clients.find(({ id }) => id === Number(url.searchParams.get("client")));
+  const campaigns = store.listCampaigns().reverse().filter(({ clientId }) => !clientFilter || clientId === clientFilter.id);
+  const keep = clientFilter ? `&amp;client=${clientFilter.id}` : "";
+  const clientName = new Map(clients.map(({ id, name }) => [id, name]));
   const creating = url.searchParams.get("new") === "1" || campaigns.length === 0;
   const requested = Number(url.searchParams.get("campaign"));
   const selected = creating ? undefined : campaigns.find(({ id }) => id === requested) ?? campaigns[0];
   const items = campaigns.map((campaign) => {
     const stats = campaignStats(campaign);
-    const meta = [`${stats.companies} companies`, `${stats.sent} sent`, stats.due ? `${stats.due} due` : ""].filter(Boolean).join(" · ");
+    const owner = !clientFilter && campaign.clientId !== null ? clientName.get(campaign.clientId) : undefined;
+    const meta = [owner ? escapeHtml(owner) : "", `${stats.companies} companies`, `${stats.sent} sent`, stats.due ? `${stats.due} due` : ""].filter(Boolean).join(" · ");
     const current = campaign.id === selected?.id;
-    return `<a class="camp-item${current ? " active" : ""}" href="/?campaign=${campaign.id}#campaign-detail"${current ? ' aria-current="true"' : ""}><span class="camp-row"><strong>${escapeHtml(campaign.name)}</strong><span class="badge ${campaign.status}">${humanize(campaign.status)}</span></span><span class="camp-seg">${escapeHtml(campaign.segment)}</span><span class="camp-meta">${meta}</span></a>`;
+    return `<a class="camp-item${current ? " active" : ""}" href="/campaigns?campaign=${campaign.id}${keep}#campaign-detail"${current ? ' aria-current="true"' : ""}><span class="camp-row"><strong>${escapeHtml(campaign.name)}</strong><span class="badge ${campaign.status}">${humanize(campaign.status)}</span></span><span class="camp-seg">${escapeHtml(campaign.segment)}</span><span class="camp-meta">${meta}</span></a>`;
   }).join("");
   const running = selected !== undefined && store.listWorkflowRuns(selected.id)
     .some(({ status }) => status === "RUNNING" || status === "PENDING");
-  return layout("Campaigns", `<section><span class="eyebrow">Control center</span><h1>Outbound campaigns</h1><p class="lede">Research, review, and qualify prospects through explicit approval gates.</p></section>${notices(url)}<div class="master" id="campaigns"><aside class="card camp-list"><div class="cardhead"><h2>Campaigns <span class="badge">${campaigns.length}</span></h2><a class="button${creating ? "" : " secondary"}" href="/?new=1#campaign-detail">+ New</a></div>${items ? `<nav aria-label="Campaigns">${items}</nav>` : '<p class="muted">No campaigns yet.</p>'}</aside><section class="card camp-detail" id="campaign-detail">${selected ? campaignDetail(selected) : newCampaignForm()}</section></div><script>(function(){var nav=document.querySelector('.camp-list nav'),item=nav&&nav.querySelector('.camp-item.active');if(item&&(item.offsetTop<nav.scrollTop||item.offsetTop+item.offsetHeight>nav.scrollTop+nav.clientHeight))nav.scrollTop=item.offsetTop-nav.clientHeight/2+item.offsetHeight/2})();</script><div class="grid" style="margin-top:18px">${doNotContactCard()}</div>`, { refreshing: running });
+  return layout("Campaigns", `<section><span class="eyebrow">Control center</span><h1>Outbound campaigns</h1><p class="lede">Research, review, and qualify prospects through explicit approval gates.</p>${clients.length > 1 || clientFilter ? `<nav class="chips" aria-label="Filter by client"><a href="/campaigns"${clientFilter ? "" : ' class="active"'}>All clients</a>${clients.map((client) => `<a href="/campaigns?client=${client.id}"${client.id === clientFilter?.id ? ' class="active"' : ""}>${escapeHtml(client.name)}</a>`).join("")}</nav>` : ""}</section>${notices(url)}<div class="master" id="campaigns"><aside class="card camp-list"><div class="cardhead"><h2>Campaigns <span class="badge">${campaigns.length}</span></h2><a class="button${creating ? "" : " secondary"}" href="/campaigns?new=1${keep}#campaign-detail">+ New</a></div>${items ? `<nav aria-label="Campaigns">${items}</nav>` : '<p class="muted">No campaigns yet.</p>'}</aside><section class="card camp-detail" id="campaign-detail">${selected ? campaignDetail(selected) : newCampaignForm(clientFilter?.id)}</section></div><script>(function(){var nav=document.querySelector('.camp-list nav'),item=nav&&nav.querySelector('.camp-item.active');if(item&&(item.offsetTop<nav.scrollTop||item.offsetTop+item.offsetHeight>nav.scrollTop+nav.clientHeight))nav.scrollTop=item.offsetTop-nav.clientHeight/2+item.offsetHeight/2})();</script><div class="grid" style="margin-top:18px">${doNotContactCard()}</div>`, { refreshing: running });
 }
 
 function sourceFor(research: ResearchRecord[], companyId: number, contactId?: number): ResearchRecord | undefined {
@@ -314,7 +326,7 @@ function runLabel(run: WorkflowRun): string {
 
 function campaignHeader(campaign: Campaign, url: URL, tab: "pipeline" | "follow-ups"): string {
   const due = countDueFollowUps(store, campaign.id);
-  return `<a href="/">← All campaigns</a><section class="campaign-heading" style="margin-top:18px"><div><span class="eyebrow">Campaign ${campaign.id}</span><h1>${escapeHtml(campaign.name)}</h1><p class="lede">${escapeHtml(campaign.segment)}</p></div><a class="button secondary" href="/campaigns/${campaign.id}/edit">Edit campaign</a></section>${notices(url)}<nav class="tabs"><a href="/campaigns/${campaign.id}"${tab === "pipeline" ? ' class="active"' : ""}>Pipeline</a><a href="/campaigns/${campaign.id}/follow-ups"${tab === "follow-ups" ? ' class="active"' : ""}>Sent &amp; follow-ups${due ? ` <span class="badge PENDING">${due} due</span>` : ""}</a></nav>${sectionNav(tab)}`;
+  return `<a href="/campaigns?client=${campaign.clientId ?? ""}">← All campaigns</a><section class="campaign-heading" style="margin-top:18px"><div><span class="eyebrow">Campaign ${campaign.id}</span><h1>${escapeHtml(campaign.name)}</h1><p class="lede">${escapeHtml(campaign.segment)}</p></div><a class="button secondary" href="/campaigns/${campaign.id}/edit">Edit campaign</a></section>${notices(url)}<nav class="tabs"><a href="/campaigns/${campaign.id}"${tab === "pipeline" ? ' class="active"' : ""}>Pipeline</a><a href="/campaigns/${campaign.id}/follow-ups"${tab === "follow-ups" ? ' class="active"' : ""}>Sent &amp; follow-ups${due ? ` <span class="badge PENDING">${due} due</span>` : ""}</a></nav>${sectionNav(tab)}`;
 }
 
 function editCampaignPage(campaign: Campaign, url: URL): string {
@@ -525,7 +537,44 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     send(response, 200, layout("Confirm send", `${back}<section class="card" style="margin-top:18px"><h1>Confirm sending</h1>${threadNote}<p><strong>From:</strong> ${escapeHtml(sender)}<br><strong>To:</strong> ${escapeHtml(recipient.address)}${recipient.guessed ? ` <span class="badge UNKNOWN">Guessed</span> ${guessVerificationBadge(recipient.verification, contact.guessedEmailVerificationDetail)}` : ""}<br><strong>Subject:</strong> ${escapeHtml(draft.subject)}</p>${recipientWarning}<pre class="email-preview">${escapeHtml(draft.body)}</pre><div class="notice">This sends a real email to this prospect. Sending cannot be undone by this dashboard.</div><form method="post" action="/campaigns/${campaignId}/outreach/${id}/send"><input type="hidden" name="sendSignature" value="${signature("outreach", id, expected)}"><label class="inline"><input type="checkbox" name="confirm" value="yes" required>I confirm sending this exact approved email to the recipient above${recipient.guessed ? ", knowing the address is guessed and unverified" : ""}.</label><button>Send email now</button></form></section>`)); return;
   }
   if (request.method === "GET" && url.pathname === "/") {
+    send(response, 200, layout("Clients", `${notices(url)}${renderClientsPage(store, url)}`)); return;
+  }
+  if (request.method === "GET" && url.pathname === "/campaigns") {
     send(response, 200, dashboardPage(url)); return;
+  }
+
+  const promptDownload = url.pathname.match(/^\/clients\/(\d+)\/prompts\/([a-z-]+)\.md$/);
+  if (request.method === "GET" && promptDownload) {
+    const client = store.getClient(Number(promptDownload[1]));
+    const section = getSection(promptDownload[2]!);
+    if (!client || !section || section.id === "profile") throw new WorkflowError("Prompt not found");
+    response.writeHead(200, { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store",
+      "Content-Disposition": `attachment; filename="${promptFileName(client, section.id as StageId)}"` });
+    response.end(buildStagePrompt(section.id as StageId, client.setup)); return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/clients") {
+    const form = await formData(request);
+    const startFrom = form.get("startFrom") ?? "blank";
+    const source = startFrom === "blank" ? undefined : store.getClient(Number(startFrom));
+    if (startFrom !== "blank" && !source) throw new WorkflowError("Choose a client to copy");
+    const client = store.createClient({ name: form.get("name") ?? "", setup: source?.setup ?? defaultSetup("blank") });
+    redirect(response, "/", { client: String(client.id), open: "profile",
+      notice: `Created ${client.name}${source ? ` from ${source.name}'s inputs` : ""}. Fill in each stage below.` }, "section-profile"); return;
+  }
+
+  const sectionSave = url.pathname.match(/^\/clients\/(\d+)\/sections\/([a-z-]+)$/);
+  if (request.method === "POST" && sectionSave) {
+    const clientId = Number(sectionSave[1]);
+    const section = getSection(sectionSave[2]!);
+    if (!store.getClient(clientId) || !section) throw new WorkflowError("Client setup section not found");
+    const form = await formData(request);
+    let values;
+    try { values = parseSectionForm(section.id, form); }
+    catch (error) { throw new WorkflowError(messageOf(error)); }
+    if (section.id === "profile") store.renameClient(clientId, form.get("clientName") ?? "");
+    store.updateClientSection(clientId, section.id as SectionId, values);
+    redirect(response, "/", { client: String(clientId), open: section.id, notice: `${section.title} saved.` }, `section-${section.id}`); return;
   }
 
   const campaignEditMatch = url.pathname.match(/^\/campaigns\/(\d+)\/edit$/);
@@ -550,16 +599,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       const parts = [`Added ${result.added.length} address(es) to the do-not-contact list.`];
       if (result.repliedOutreach) parts.push(`${result.repliedOutreach} sent email(s) marked as replied; their follow-ups are cancelled.`);
       if (result.alreadyListed.length) parts.push(`Already listed: ${result.alreadyListed.join(", ")}.`);
-      redirect(response, "/", { notice: parts.join(" ") }, "do-not-contact"); return;
-    } catch (error) { redirect(response, "/", { error: messageOf(error) }, "do-not-contact"); return; }
+      redirect(response, "/campaigns", { notice: parts.join(" ") }, "do-not-contact"); return;
+    } catch (error) { redirect(response, "/campaigns", { error: messageOf(error) }, "do-not-contact"); return; }
   }
 
   const suppressionDelete = url.pathname.match(/^\/suppressions\/(\d+)\/delete$/);
   if (request.method === "POST" && suppressionDelete) {
     try {
       const removed = store.removeSuppression(Number(suppressionDelete[1]));
-      redirect(response, "/", { notice: `Removed ${removed.email} from the do-not-contact list.` }, "do-not-contact"); return;
-    } catch (error) { redirect(response, "/", { error: messageOf(error) }, "do-not-contact"); return; }
+      redirect(response, "/campaigns", { notice: `Removed ${removed.email} from the do-not-contact list.` }, "do-not-contact"); return;
+    } catch (error) { redirect(response, "/campaigns", { error: messageOf(error) }, "do-not-contact"); return; }
   }
 
   if (request.method === "POST" && url.pathname === "/campaigns") {
@@ -569,7 +618,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (!name || !segment) throw new WorkflowError("Campaign name and segment are required");
     const targetCount = requirePositiveId(form.get("targetCount"), "company target count");
     if (targetCount > 30) throw new WorkflowError("Company target count cannot exceed 30");
-    const campaign = store.createCampaign({ name, segment, status: "ACTIVE" });
+    const clientId = requirePositiveId(form.get("clientId"), "client");
+    const campaign = store.createCampaign({ name, segment, status: "ACTIVE", clientId });
     if (form.get("startResearch") === "yes") {
       try {
         launchWorkflow(db, { campaignId: campaign.id, kind: "COMPANY_DISCOVERY", targetCount });
@@ -805,7 +855,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
   }
 
-  send(response, 404, layout("Not found", '<div class="card"><h1>Page not found</h1><a href="/">Return to campaigns</a></div>'));
+  send(response, 404, layout("Not found", '<div class="card"><h1>Page not found</h1><a href="/">Return to clients</a> · <a href="/campaigns">Campaigns</a></div>'));
 }
 
 const messageOf = (error: unknown): string => error instanceof Error ? error.message : String(error);
@@ -817,10 +867,19 @@ const server = createServer((request, response) => {
       const target = campaignReturn(Number(campaignAction[1]), campaignAction[2]);
       redirect(response, target.path, { ...target.params, error: messageOf(error) }, target.anchor);
     } else if (request.method === "POST") {
-      redirect(response, request.url?.startsWith("/gmail") ? "/gmail" : "/", { error: messageOf(error) });
+      const clientId = request.url?.match(/^\/clients\/(\d+)/)?.[1];
+      const section = request.url?.match(/^\/clients\/\d+\/sections\/([a-z-]+)/)?.[1];
+      if (clientId) {
+        redirect(response, "/", { client: clientId, ...(section ? { open: section } : {}), error: messageOf(error) },
+          section ? `section-${section}` : undefined);
+      } else if (request.url?.startsWith("/clients")) {
+        redirect(response, "/", { new: "1", error: messageOf(error) }, "client-detail");
+      } else {
+        redirect(response, request.url?.startsWith("/gmail") ? "/gmail" : "/campaigns", { error: messageOf(error) });
+      }
     } else {
       send(response, error instanceof WorkflowError ? 400 : 500,
-        layout("Error", `<div class="notice error">${escapeHtml(messageOf(error))}</div><a href="/">Return to campaigns</a>`));
+        layout("Error", `<div class="notice error">${escapeHtml(messageOf(error))}</div><a href="/">Return to clients</a> · <a href="/campaigns">Campaigns</a>`));
     }
   });
 });

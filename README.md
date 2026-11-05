@@ -127,8 +127,19 @@ Start the campaign control center:
 npm run dashboard
 ```
 
-Then open [http://127.0.0.1:3000](http://127.0.0.1:3000). From the dashboard
-you can create a campaign, launch company/contact/email discovery, inspect
+Then open [http://127.0.0.1:3000](http://127.0.0.1:3000). The first page is
+**Clients**: each client (the product you sell for) has its own inputs for every
+funnel stage, in order: company discovery, contact discovery, LinkedIn profile
+research, email discovery, prospect research, email generation, and follow-up
+generation. Each stage builds its prompt from those inputs plus the fixed
+workflow and safety rules the dashboard enforces; preview, copy, or download it
+as Markdown. On first start, a **ConvoKit** client is created from today's
+prompts and docs, and existing campaigns are attached to it. Workflows still run
+the hand-written files in `prompts/` for now; the generated prompts are for
+review until they replace them.
+
+The campaigns page is at `/campaigns`. From there
+you can create a campaign for a client, launch company/contact/email discovery, inspect
 Codex run output, and approve or reject companies and contacts. Research runs
 in the background and the page refreshes while a run is active. There is no
 chat interface and the dashboard does not call the OpenAI API directly; it uses
