@@ -1,18 +1,29 @@
 import type { OutboundStore } from "../db/store.js";
 import type { Client } from "../db/types.js";
 import {
-  buildStagePrompt, missingInputs, SECTIONS, type SetupField, type SetupSection, type StageId,
+  buildDocument, buildStagePrompt, DOCUMENT_IDS, DOCUMENTS, missingInputs, SECTIONS, STAGE_DOCUMENTS, STAGE_IDS,
+  type DocumentId, type SetupField, type SetupSection, type StageId,
 } from "../prompts/clientSetup.js";
 
 const escapeHtml = (value: unknown): string => String(value ?? "")
   .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
   .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
 
+const slugOf = (client: Client): string =>
+  client.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `client-${client.id}`;
+
 /** File name for a downloaded stage prompt, e.g. `convokit-company-discovery.md`. */
 export function promptFileName(client: Client, stageId: StageId): string {
-  const slug = client.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `client-${client.id}`;
-  return `${slug}-${stageId}.md`;
+  return `${slugOf(client)}-${stageId}.md`;
 }
+
+/** File name for a downloaded client document, e.g. `convokit-ICP.md`. */
+export function documentFileName(client: Client, documentId: DocumentId): string {
+  return `${slugOf(client)}-${DOCUMENTS.find(({ id }) => id === documentId)!.fileName}`;
+}
+
+const isStage = (id: string): id is StageId => (STAGE_IDS as readonly string[]).includes(id);
+const isDocument = (id: string): id is DocumentId => (DOCUMENT_IDS as readonly string[]).includes(id);
 
 function fieldInput(field: SetupField, value: unknown): string {
   const name = `name="${escapeHtml(field.key)}"`;
@@ -40,30 +51,38 @@ function statusBadge(missing: string[]): string {
     : '<span class="badge COMPLETED">Complete</span>';
 }
 
-function sectionCard(client: Client, section: SetupSection, step: number, open: boolean): string {
+function sectionCard(client: Client, section: SetupSection, step: number | string, open: boolean): string {
   const values = client.setup[section.id];
   const missing = missingInputs(section.id, client.setup);
   const nameField = section.id === "profile"
     ? `<label><span>Client name</span><input name="clientName" value="${escapeHtml(client.name)}" maxlength="200" required></label>` : "";
   const fields = section.fields.map((field) => fieldInput(field, values[field.key])).join("");
-  const stageId = section.id === "profile" ? undefined : section.id;
-  const prompt = stageId ? buildStagePrompt(stageId, client.setup) : "";
-  const promptId = `prompt-${section.id}`;
-  const preview = stageId
-    ? `<details class="prompt-preview"><summary>Generated prompt</summary><div class="actions" style="margin:10px 0"><button type="button" class="secondary" data-copy="${promptId}">Copy</button><a class="button secondary" href="/clients/${client.id}/prompts/${stageId}.md">Download .md</a></div><pre id="${promptId}">${escapeHtml(prompt)}</pre></details>`
+  const id = section.id;
+  const generated = isStage(id)
+    ? { label: "Generated prompt", text: buildStagePrompt(id, client.setup), href: `/clients/${client.id}/prompts/${id}.md` }
+    : isDocument(id)
+      ? { label: `Generated ${section.fileName}`, text: buildDocument(id, client.setup), href: `/clients/${client.id}/docs/${id}.md` }
+      : undefined;
+  const previewId = `generated-${id}`;
+  const preview = generated
+    ? `<details class="prompt-preview"><summary>${escapeHtml(generated.label)}</summary><div class="actions" style="margin:10px 0"><button type="button" class="secondary" data-copy="${previewId}">Copy</button><a class="button secondary" href="${generated.href}">Download .md</a></div><pre id="${previewId}">${escapeHtml(generated.text)}</pre></details>`
     : "";
+  const reads = isStage(id) && STAGE_DOCUMENTS[id].length
+    ? ` Reads the client's ${STAGE_DOCUMENTS[id].map((doc) => DOCUMENTS.find(({ id: docId }) => docId === doc)!.fileName).join(" and ")}.` : "";
   const source = section.source
-    ? `<p class="muted field-help">Based on <code>${escapeHtml(section.source)}</code>. Workflows still run that file; this prompt is for review until it replaces it.</p>` : "";
-  return `<details class="card setup-section" id="section-${section.id}"${open ? " open" : ""}><summary><span class="step-no">${step === 0 ? "★" : step}</span><span class="setup-title"><strong>${escapeHtml(section.title)}</strong><small>${escapeHtml(section.summary)}</small></span>${statusBadge(missing)}</summary>${source}<form method="post" action="/clients/${client.id}/sections/${section.id}">${nameField}${fields}<div class="actions"><button>Save ${escapeHtml(section.title.toLowerCase())}</button></div></form>${preview}</details>`;
+    ? `<p class="muted field-help">Based on <code>${escapeHtml(section.source)}</code>, which workflows still use until this ${isDocument(id) ? "document" : "prompt"} replaces it.${reads}</p>` : "";
+  return `<details class="card setup-section" id="section-${section.id}"${open ? " open" : ""}><summary><span class="step-no">${step}</span><span class="setup-title"><strong>${escapeHtml(section.title)}</strong><small>${escapeHtml(section.summary)}</small></span>${statusBadge(missing)}</summary>${source}<form method="post" action="/clients/${client.id}/sections/${section.id}">${nameField}${fields}<div class="actions"><button>Save ${escapeHtml(section.title.toLowerCase())}</button></div></form>${preview}</details>`;
 }
 
 function clientDetail(store: OutboundStore, client: Client, openSection: string | null): string {
   const campaigns = store.listCampaigns().filter(({ clientId }) => clientId === client.id);
-  const funnel = SECTIONS.filter(({ id }) => id !== "profile").map((section, index) => {
+  const chip = (section: SetupSection, mark: string) => {
     const missing = missingInputs(section.id, client.setup).length;
-    return `<a class="funnel-step${missing ? " todo" : ""}" href="#section-${section.id}"><span>${index + 1}</span>${escapeHtml(section.title)}</a>`;
-  }).join("");
-  const sections = SECTIONS.map((section, index) => sectionCard(client, section, index, section.id === openSection)).join("");
+    return `<a class="funnel-step${missing ? " todo" : ""}" href="#section-${section.id}"><span>${mark}</span>${escapeHtml(section.fileName ?? section.title)}</a>`;
+  };
+  const stages = SECTIONS.filter(({ id }) => id !== "profile");
+  const funnel = `<span class="funnel-label">Documents</span>${DOCUMENTS.map((section) => chip(section, "D")).join("")}<span class="funnel-label">Stages</span>${stages.map((section, index) => chip(section, String(index + 1))).join("")}`;
+  const sections = `${sectionCard(client, SECTIONS[0]!, "★", openSection === "profile")}<h3 class="group-title">Documents</h3><p class="muted field-help" style="margin:0">Built from the inputs below plus related profile and stage inputs, so nothing is entered twice.</p>${DOCUMENTS.map((section) => sectionCard(client, section, "D", section.id === openSection)).join("")}<h3 class="group-title">Funnel stages</h3>${stages.map((section, index) => sectionCard(client, section, index + 1, section.id === openSection)).join("")}`;
   return `<div class="cardhead"><div><span class="eyebrow">Client ${client.id} · updated ${escapeHtml(new Date(client.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }))}</span><h2 class="detail-title">${escapeHtml(client.name)}</h2></div></div><p class="muted" style="margin-top:0">Fill in what changes from client to client. Each stage below builds its prompt from these inputs plus the fixed workflow and safety rules the dashboard enforces.</p><div class="actions"><a class="button" href="/campaigns?client=${client.id}">Open campaigns (${campaigns.length})</a><a class="button secondary" href="/campaigns?new=1&amp;client=${client.id}#campaign-detail">New campaign</a></div><nav class="funnel" aria-label="Funnel stages">${funnel}</nav><div class="setup-sections">${sections}</div>`;
 }
 
@@ -81,7 +100,7 @@ export function renderClientsPage(store: OutboundStore, url: URL): string {
   const campaigns = store.listCampaigns();
   const items = clients.map((client) => {
     const count = campaigns.filter(({ clientId }) => clientId === client.id).length;
-    const missing = SECTIONS.reduce((total, section) => total + missingInputs(section.id, client.setup).length, 0);
+    const missing = [...SECTIONS, ...DOCUMENTS].reduce((total, section) => total + missingInputs(section.id, client.setup).length, 0);
     const current = client.id === selected?.id;
     return `<a class="camp-item${current ? " active" : ""}" href="/?client=${client.id}#client-detail"${current ? ' aria-current="true"' : ""}><span class="camp-row"><strong>${escapeHtml(client.name)}</strong>${missing ? `<span class="badge PENDING">${missing} missing</span>` : '<span class="badge COMPLETED">Ready</span>'}</span><span class="camp-meta">${count} campaign(s)</span></a>`;
   }).join("");

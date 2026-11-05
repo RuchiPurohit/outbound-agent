@@ -122,8 +122,32 @@ export class OutboundStore {
     return this.db.transaction(() => {
       const client = this.listClients()[0] ?? this.createClient({ name: "ConvoKit", setup: defaultSetup("convokit") });
       this.db.prepare("UPDATE campaigns SET client_id = ? WHERE client_id IS NULL").run(client.id);
-      return client;
+      this.backfillConvokitClient();
+      return this.getClient(client.id)!;
     })();
+  }
+
+  /**
+   * Gives a ConvoKit client created by an earlier version the setup sections added since
+   * (e.g. its documents), from today's values, without touching sections it already has.
+   */
+  private backfillConvokitClient(): void {
+    const row = this.db.prepare("SELECT id, settings FROM clients WHERE name = 'ConvoKit' COLLATE NOCASE").get() as Row | undefined;
+    if (!row) return;
+    const stored = JSON.parse(text(row, "settings")) as Record<string, Record<string, unknown>>;
+    const defaults = defaultSetup("convokit");
+    let changed = false;
+    for (const [sectionId, values] of Object.entries(defaults)) {
+      if (!stored[sectionId]) { stored[sectionId] = values; changed = true; }
+    }
+    // The client documents replace the repository docs an earlier version listed here.
+    const docs = stored.profile?.referenceDocs;
+    if (JSON.stringify(docs) === JSON.stringify(["AGENTS.md", "docs/ICP.md", "docs/PRODUCT.md", "docs/EMAIL_RULES.md"])) {
+      stored.profile!.referenceDocs = ["AGENTS.md"]; changed = true;
+    }
+    if (changed) {
+      this.db.prepare("UPDATE clients SET settings = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(stored), now(), integer(row, "id"));
+    }
   }
 
   createClient(input: { name: string; setup?: ClientSetup }): Client {

@@ -3,7 +3,8 @@ import { describe, it } from "node:test";
 import { openDatabase } from "../src/db/database.js";
 import { OutboundStore } from "../src/db/store.js";
 import {
-  buildStagePrompt, defaultSetup, missingInputs, parseSectionForm, resolveSetup, SECTIONS, type StageId,
+  buildDocument, buildStagePrompt, defaultSetup, DOCUMENT_IDS, DOCUMENTS, missingInputs, parseSectionForm, resolveSetup,
+  SECTIONS, type StageId,
 } from "../src/prompts/clientSetup.js";
 import { renderClientsPage } from "../src/web/clientsPage.js";
 
@@ -60,7 +61,69 @@ describe("Client setup prompts", () => {
   });
 });
 
+describe("Client documents", () => {
+  it("builds complete PRODUCT.md, ICP.md, and EMAIL_RULES.md from the ConvoKit defaults", () => {
+    const setup = defaultSetup("convokit");
+    assert.deepEqual(DOCUMENTS.map(({ fileName }) => fileName), ["PRODUCT.md", "ICP.md", "EMAIL_RULES.md"]);
+    for (const id of DOCUMENT_IDS) {
+      assert.deepEqual(missingInputs(id, setup), [], id);
+      assert.doesNotMatch(buildDocument(id, setup), /NOT SET/, id);
+    }
+    const product = buildDocument("doc-product", setup);
+    assert.match(product, /^# ConvoKit product profile/);
+    assert.match(product, /\| `marketplace` \| marketplaces with buyers and sellers \| a buyer and seller sorting out an order \|/);
+    assert.match(product, /\| \(omit s\) \| anything else \|/);
+    assert.match(product, /Do not mention these in outreach[\s\S]*support inbox/);
+    const icp = buildDocument("doc-icp", setup);
+    assert.match(icp, /\| Messaging workflow fit \(`workflowFit`\) \| 0–30 \|/);
+    assert.match(icp, /1\. CTO or Technical Founder/);
+    assert.match(icp, /### Tier 2 — pursue selectively\n\n- strong greenfield workflow/);
+    assert.match(icp, /`workflowFit`:\n\n- 0: no sourced product workflow/);
+    const rules = buildDocument("doc-email-rules", setup);
+    assert.match(rules, /never exceed 140/);
+    assert.match(rules, /- touch base/);
+    assert.match(rules, /- https:\/\/convokit.app\/docs/);
+  });
+
+  it("uses each shared input once and points stage prompts at the client documents", () => {
+    const setup = defaultSetup("convokit");
+    setup.profile.capabilities = ["threaded replies"];
+    setup["company-discovery"].prioritySegments = ["clinics"];
+    setup["doc-icp"].notes = "Skip companies in stealth.";
+    assert.match(buildDocument("doc-product", setup), /## Confirmed capabilities\n\n- threaded replies\n/);
+    assert.match(buildDocument("doc-icp", setup), /Priority segments:\n\n- clinics\n/);
+    assert.match(buildDocument("doc-icp", setup), /## Additional notes\n\nSkip companies in stealth\./);
+    assert.match(buildStagePrompt("company-discovery", setup), /Read AGENTS\.md, ICP\.md \(client document\), PRODUCT\.md \(client document\)/);
+    assert.match(buildStagePrompt("email-generation", setup), /PRODUCT\.md \(client document\), EMAIL_RULES\.md \(client document\)/);
+    assert.doesNotMatch(buildStagePrompt("linkedin-profile-research", setup), /client document/);
+  });
+
+  it("flags missing document inputs for a blank client but never optional notes", () => {
+    const setup = defaultSetup("blank");
+    assert.ok(missingInputs("doc-icp", setup).includes("Tier 1: pursue first"));
+    assert.ok(!missingInputs("doc-icp", setup).includes("Additional notes"));
+    assert.match(buildDocument("doc-icp", setup), /\[NOT SET: Commercial objective\]/);
+    assert.match(buildDocument("doc-product", setup), /Nothing is listed/);
+  });
+});
+
 describe("Clients", () => {
+  it("backfills sections added after an existing ConvoKit client was created", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const store = new OutboundStore(db);
+      const old = defaultSetup("convokit") as Record<string, unknown>;
+      for (const id of DOCUMENT_IDS) delete old[id];
+      (old.profile as Record<string, unknown>).referenceDocs = ["AGENTS.md", "docs/ICP.md", "docs/PRODUCT.md", "docs/EMAIL_RULES.md"];
+      (old.profile as Record<string, unknown>).productName = "ConvoKit Edited";
+      db.prepare("INSERT INTO clients (name, settings, created_at, updated_at) VALUES ('ConvoKit', ?, 'x', 'x')").run(JSON.stringify(old));
+      const client = store.ensureDefaultClient();
+      for (const id of DOCUMENT_IDS) assert.deepEqual(missingInputs(id, client.setup), [], id);
+      assert.deepEqual(client.setup.profile.referenceDocs, ["AGENTS.md"]);
+      assert.equal(client.setup.profile.productName, "ConvoKit Edited");
+    } finally { db.close(); }
+  });
+
   it("creates the ConvoKit client once and attaches earlier campaigns", () => {
     const db = openDatabase(":memory:");
     try {
@@ -99,6 +162,8 @@ describe("Clients", () => {
       assert.match(html, /input\(s\) missing/);
       assert.match(html, new RegExp(`action="/clients/${blank.id}/sections/company-discovery"`));
       assert.match(html, new RegExp(`href="/clients/${blank.id}/prompts/follow-up-generation.md"`));
+      assert.match(html, new RegExp(`href="/clients/${blank.id}/docs/doc-icp.md"`));
+      assert.match(html, new RegExp(`action="/clients/${blank.id}/sections/doc-email-rules"`));
     } finally { db.close(); }
   });
 });

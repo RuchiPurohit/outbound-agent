@@ -131,12 +131,15 @@ Then open [http://127.0.0.1:3000](http://127.0.0.1:3000). The first page is
 **Clients**: each client (the product you sell for) has its own inputs for every
 funnel stage, in order: company discovery, contact discovery, LinkedIn profile
 research, email discovery, prospect research, email generation, and follow-up
-generation. Each stage builds its prompt from those inputs plus the fixed
-workflow and safety rules the dashboard enforces; preview, copy, or download it
-as Markdown. On first start, a **ConvoKit** client is created from today's
+generation. Each client also gets its own **documents** (PRODUCT.md, ICP.md,
+and EMAIL_RULES.md), built from document-specific inputs plus the shared profile
+and stage inputs, so a capability or segment is entered once. Each stage builds
+its prompt from those inputs plus the fixed workflow and safety rules the
+dashboard enforces, and points to the client documents it reads. Preview, copy,
+or download any prompt or document as Markdown. On first start, a **ConvoKit** client is created from today's
 prompts and docs, and existing campaigns are attached to it. Workflows still run
-the hand-written files in `prompts/` for now; the generated prompts are for
-review until they replace them.
+the hand-written files in `prompts/` and `docs/` for now; the generated prompts
+and documents are for review until they replace them.
 
 The campaigns page is at `/campaigns`. From there
 you can create a campaign for a client, launch company/contact/email discovery, inspect

@@ -239,9 +239,12 @@ Explain important architectural decisions before implementing them.
 ## Client setup
 
 The dashboard's Clients page stores per-client inputs for each funnel stage
-(`src/prompts/clientSetup.ts`) and builds stage prompts from them. Those
-generated prompts are not yet used by workflows: runs still read the files in
-`prompts/`, which must not be removed until the generated prompts replace them.
+and for the client's documents (PRODUCT.md, ICP.md, EMAIL_RULES.md) in
+`src/prompts/clientSetup.ts`, and builds stage prompts and documents from them.
+Each shared input (capabilities, segments, templates) feeds every document and
+prompt that needs it. The generated prompts and documents are not yet used by
+workflows: runs still read the files in `prompts/` and `docs/`, which must not be
+removed until the generated versions replace them.
 Fixed rules the code enforces (approval gates, contact and follow-up limits,
 score factors, email patterns) stay in the builders, not in client inputs.
 
