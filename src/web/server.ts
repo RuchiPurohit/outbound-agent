@@ -126,6 +126,7 @@ function layout(title: string, body: string, options: { refreshing?: boolean } =
 .campaign-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.campaign-heading .button{flex:none}@media(max-width:600px){.campaign-heading{display:block}.campaign-heading .button{display:inline-block;margin-top:14px}}
 .toasts{position:fixed;top:16px;right:16px;left:16px;margin-left:auto;max-width:420px;z-index:10}.toasts .notice{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;margin:0 0 8px;box-shadow:var(--shadow)}.toasts .dismiss{background:none;color:inherit;padding:0 2px;font-size:16px;line-height:1}.badge.UNCERTAIN,.badge.SENDING,.badge.PREPARING{background:#f2e5c9;color:var(--amber)}
 .manual-email{border-top:0;padding:0;min-width:200px}.manual-email form{margin-top:10px}
+.master{display:grid;grid-template-columns:minmax(260px,360px) 1fr;gap:18px;margin-top:24px;align-items:start}.camp-list{padding:14px;position:sticky;top:16px;max-height:calc(100vh - 32px);overflow-y:auto}.camp-list .cardhead{padding:4px 6px 0}.camp-item{display:block;padding:10px 12px;border-radius:10px;color:var(--ink);border:1px solid transparent}.camp-item+.camp-item{margin-top:4px}.camp-item:hover{text-decoration:none;background:#f3f1ea}.camp-item.active{background:var(--green2);border-color:#b9d3c0}.camp-row{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.camp-row strong{min-width:0;overflow-wrap:anywhere}.camp-seg{display:block;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}.camp-meta{display:block;color:var(--muted);font-size:12px;margin-top:4px}.camp-detail{min-width:0;scroll-margin-top:16px}.detail-title{font:650 26px/1.15 Georgia,serif;letter-spacing:-.02em;margin-top:4px}.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:18px}.tile{display:block;border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--ink)}.tile:hover{text-decoration:none;border-color:#9eaa9f}.tile strong{display:block;font:650 26px/1 Georgia,serif}.tile span{display:block;font-size:12px;font-weight:650;margin-top:6px}.tile small{display:block;color:var(--muted);font-size:11px;margin-top:2px}.tile.attention{border-color:#e4bd78;background:#fff8ea}.runs{list-style:none;padding:0;margin:10px 0 0;font-size:13px}.runs li{padding:7px 0;border-top:1px solid var(--line)}@media(max-width:800px){.master{grid-template-columns:1fr}.camp-list{position:static;max-height:none}}
 </style></head><body${options.refreshing ? " data-live-refresh" : ""}><main class="shell"><header class="top"><a class="brand" href="/"><span>→</span> outbound</a><div class="inline"><a href="/gmail">Email connections</a><span class="badge">Local SQLite</span></div></header>${body}<footer class="footer">Runs locally on ${escapeHtml(host)} · No emails are sent without explicit approval.</footer></main>
 <script>(function(){var u=new URL(location.href);if(u.searchParams.has('notice')||u.searchParams.has('error')){u.searchParams.delete('notice');u.searchParams.delete('error');history.replaceState(null,'',u.pathname+u.search+u.hash)}})();document.addEventListener('click',function(e){var b=e.target.closest('.toasts .dismiss');if(b)b.parentElement.remove();b=e.target.closest('[data-select]');if(b)b.closest('form').querySelectorAll('input[type="checkbox"]'+(b.dataset.select?'[name="'+b.dataset.select+'"]':'')+':not(:disabled)').forEach(function(c){c.checked=true})});</script>
 <script>${LIVE_REFRESH_SCRIPT}</script></body></html>`;
@@ -234,15 +235,71 @@ function doNotContactCard(): string {
   return `<section class="card span12" id="do-not-contact"><div class="cardhead"><div><span class="eyebrow">Replies</span><h2>Not interested · do not contact</h2></div><span class="badge">${suppressions.length} address(es)</span></div><p class="muted">Add addresses that replied "not interested". In every campaign, that person is no longer researched, drafted, approved, or sent to, and their sent emails are marked as replied so no follow-up goes out. Colleagues at the same company can still be contacted.</p><form method="post" action="/suppressions"><label><span>Email address(es), one per line or comma-separated</span><textarea name="emails" required maxlength="20000" style="min-height:70px" placeholder="pat@example.com"></textarea></label><label><span>Note (optional)</span><input name="note" maxlength="1000" placeholder="Replied Nov 4: not a priority this year"></label><button>Add to do-not-contact list</button></form>${rows ? `<div class="tablewrap" style="margin-top:16px"><table><thead><tr><th>Email</th><th>Matching contacts</th><th>Added</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}</section>`;
 }
 
+const shortDate = (value: string): string =>
+  new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+/** Funnel counts for one campaign, shown in its list row and detail pane. */
+function campaignStats(campaign: Campaign) {
+  const companies = store.listCompanies({ campaignId: campaign.id });
+  const contacts = companies.flatMap(({ id }) => store.listContacts(id));
+  const approvedContacts = contacts.filter(({ status }) => status === "APPROVED");
+  const outreach = store.listCampaignOutreach(campaign.id);
+  const count = (...statuses: string[]) => outreach.filter(({ status }) => statuses.includes(status)).length;
+  return {
+    companies: companies.length,
+    approvedCompanies: companies.filter(({ status }) => status === "APPROVED").length,
+    contacts: contacts.length,
+    approvedContacts: approvedContacts.length,
+    withEmail: approvedContacts.filter((contact) => store.getContactRecipient(contact.id)).length,
+    drafts: count("DRAFT"),
+    ready: count("READY_TO_SEND"),
+    sent: count("SENT", "REPLIED", "BOUNCED"),
+    replied: count("REPLIED"),
+    bounced: count("BOUNCED"),
+    due: countDueFollowUps(store, campaign.id),
+  };
+}
+
+function newCampaignForm(): string {
+  return `<div class="cardhead"><div><span class="eyebrow">Step 1</span><h2>New campaign</h2></div></div><form method="post" action="/campaigns"><label><span>Name</span><input name="name" required placeholder="Developer tools · North America"></label><label><span>Target segment</span><textarea name="segment" required placeholder="Developer tools and B2B SaaS companies in USA and Canada, 20–200 employees."></textarea></label><label><span>Number of companies</span><input name="targetCount" type="number" min="1" max="25" value="5" required></label><label class="inline"><input type="checkbox" name="startResearch" value="yes" checked> Start company discovery now</label><button type="submit">Create campaign</button></form>`;
+}
+
+function campaignDetail(campaign: Campaign): string {
+  const stats = campaignStats(campaign);
+  const runs = store.listWorkflowRuns(campaign.id);
+  const active = runs.find(({ status }) => status === "RUNNING" || status === "PENDING");
+  const base = `/campaigns/${campaign.id}`;
+  const tile = (href: string, value: number | string, label: string, hint = "", tone = "") =>
+    `<a class="tile${tone ? ` ${tone}` : ""}" href="${href}"><strong>${value}</strong><span>${label}</span>${hint ? `<small>${hint}</small>` : ""}</a>`;
+  const tiles = [
+    tile(`${base}#companies`, stats.approvedCompanies, "Companies approved", `of ${stats.companies} found`),
+    tile(`${base}#contacts`, stats.approvedContacts, "Contacts approved", `of ${stats.contacts} found`),
+    tile(`${base}#email-discovery`, stats.withEmail, "With an email", "sourced or guessed"),
+    tile(`${base}#draft-review`, stats.drafts, "Drafts to review", "", stats.drafts ? "attention" : ""),
+    tile(`${base}#draft-review`, stats.ready, "Ready to send", "", stats.ready ? "attention" : ""),
+    tile(`${base}/follow-ups#sent-emails`, stats.sent, "Sent", stats.bounced ? `${stats.bounced} bounced` : ""),
+    tile(`${base}/follow-ups#sent-emails`, stats.replied, "Replied"),
+    tile(`${base}/follow-ups#sent-emails`, stats.due, "Follow-ups due", "", stats.due ? "attention" : ""),
+  ].join("");
+  const runRows = runs.slice(0, 4).map((run) =>
+    `<li><span class="badge ${run.status}">${humanize(run.status)}</span> ${escapeHtml(runLabel(run))}</li>`).join("");
+  return `<div class="cardhead"><div><span class="eyebrow">Campaign ${campaign.id} · created ${escapeHtml(shortDate(campaign.createdAt))}</span><h2 class="detail-title">${escapeHtml(campaign.name)}</h2></div><span class="badge ${campaign.status}">${humanize(campaign.status)}</span></div><p class="muted" style="margin-top:0">${escapeHtml(campaign.segment)}</p><div class="actions"><a class="button" href="${base}">Open pipeline</a><a class="button secondary" href="${base}/follow-ups">Sent &amp; follow-ups${stats.due ? ` (${stats.due} due)` : ""}</a><a class="button secondary" href="${base}/edit">Edit</a></div>${active ? `<div class="notice">${escapeHtml(humanize(active.kind))} is ${humanize(active.status)}. This pane refreshes every 3s.</div>` : ""}<div class="tiles">${tiles}</div><h3 style="margin-top:20px">Recent activity</h3>${runRows ? `<ul class="runs">${runRows}</ul>` : '<p class="muted">No workflow runs yet.</p>'}`;
+}
+
 function dashboardPage(url: URL): string {
   const campaigns = store.listCampaigns().reverse();
-  const cards = campaigns.map((campaign) => {
-    const companies = store.listCompanies({ campaignId: campaign.id });
-    const contacts = companies.flatMap(({ id }) => store.listContacts(id));
-    return `<a class="card span4 campaign" href="/campaigns/${campaign.id}"><div class="cardhead"><span class="eyebrow">Campaign ${campaign.id}</span><span class="badge ${campaign.status}">${humanize(campaign.status)}</span></div><h2>${escapeHtml(campaign.name)}</h2><p class="muted">${escapeHtml(campaign.segment)}</p><div class="inline"><span><strong>${companies.length}</strong> companies</span><span><strong>${contacts.length}</strong> contacts</span></div></a>`;
+  const creating = url.searchParams.get("new") === "1" || campaigns.length === 0;
+  const requested = Number(url.searchParams.get("campaign"));
+  const selected = creating ? undefined : campaigns.find(({ id }) => id === requested) ?? campaigns[0];
+  const items = campaigns.map((campaign) => {
+    const stats = campaignStats(campaign);
+    const meta = [`${stats.companies} companies`, `${stats.sent} sent`, stats.due ? `${stats.due} due` : ""].filter(Boolean).join(" · ");
+    const current = campaign.id === selected?.id;
+    return `<a class="camp-item${current ? " active" : ""}" href="/?campaign=${campaign.id}#campaign-detail"${current ? ' aria-current="true"' : ""}><span class="camp-row"><strong>${escapeHtml(campaign.name)}</strong><span class="badge ${campaign.status}">${humanize(campaign.status)}</span></span><span class="camp-seg">${escapeHtml(campaign.segment)}</span><span class="camp-meta">${meta}</span></a>`;
   }).join("");
-
-  return layout("Campaigns", `<section><span class="eyebrow">Control center</span><h1>Outbound campaigns</h1><p class="lede">Research, review, and qualify prospects through explicit approval gates.</p></section>${notices(url)}<div class="grid" style="margin-top:24px"><section class="card span4"><div class="cardhead"><h2>New campaign</h2><span class="badge">Step 1</span></div><form method="post" action="/campaigns"><label><span>Name</span><input name="name" required placeholder="Developer tools · North America"></label><label><span>Target segment</span><textarea name="segment" required placeholder="Developer tools and B2B SaaS companies in USA and Canada, 20–200 employees."></textarea></label><label><span>Number of companies</span><input name="targetCount" type="number" min="1" max="25" value="5" required></label><label class="inline"><input type="checkbox" name="startResearch" value="yes" checked> Start company discovery now</label><button type="submit">Create campaign</button></form></section>${cards || '<div class="card span8 empty">No campaigns yet. Create one to begin.</div>'}${doNotContactCard()}</div>`);
+  const running = selected !== undefined && store.listWorkflowRuns(selected.id)
+    .some(({ status }) => status === "RUNNING" || status === "PENDING");
+  return layout("Campaigns", `<section><span class="eyebrow">Control center</span><h1>Outbound campaigns</h1><p class="lede">Research, review, and qualify prospects through explicit approval gates.</p></section>${notices(url)}<div class="master" id="campaigns"><aside class="card camp-list"><div class="cardhead"><h2>Campaigns <span class="badge">${campaigns.length}</span></h2><a class="button${creating ? "" : " secondary"}" href="/?new=1#campaign-detail">+ New</a></div>${items ? `<nav aria-label="Campaigns">${items}</nav>` : '<p class="muted">No campaigns yet.</p>'}</aside><section class="card camp-detail" id="campaign-detail">${selected ? campaignDetail(selected) : newCampaignForm()}</section></div><div class="grid" style="margin-top:18px">${doNotContactCard()}</div>`, { refreshing: running });
 }
 
 function sourceFor(research: ResearchRecord[], companyId: number, contactId?: number): ResearchRecord | undefined {
