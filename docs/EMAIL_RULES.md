@@ -157,9 +157,9 @@ first-touch record. Every follow-up replies in the same thread
 (`Re: <original subject>`), keeps the first touch's cited signal, and needs
 explicit human approval and send confirmation.
 
-The client's sequence (Clients page) sets how many steps follow the first
-email, each step's wait, and its template; a drafting request lists the step to
-write. The default sequence is the two emails below: Follow-up 1 can be sent 7
+Each campaign's sequence (its Sequence tab) sets how many steps follow the
+first email, each step's wait, and its template; a drafting request lists the
+step to write. The default sequence is the two emails below: Follow-up 1 can be sent 7
 days after the first touch and Follow-up 2 7 days after Follow-up 1. No step
 runs once the prospect is marked as replied or the first email bounced.
 

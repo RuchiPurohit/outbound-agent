@@ -1,4 +1,4 @@
-import type { ClientSetup } from "../prompts/clientSetup.js";
+import type { CampaignSequence, ClientSetup } from "../prompts/clientSetup.js";
 
 export type CampaignStatus = "DRAFT" | "ACTIVE" | "PAUSED" | "COMPLETED";
 export type ReviewStatus = "DISCOVERED" | "APPROVED" | "REJECTED";
@@ -35,6 +35,8 @@ export interface Campaign {
   status: CampaignStatus;
   /** The client this campaign sells for; null only before the default client is attached. */
   clientId: number | null;
+  /** First-email guidance and the steps after it, for this campaign's segment. */
+  sequence: CampaignSequence;
 }
 
 /** A client whose product is sold, with its per-stage prompt inputs. */
@@ -140,7 +142,7 @@ export interface Outreach {
   bounceDetail: string | null;
 }
 
-/** A step after the first email in a client's sequence, 1-based. */
+/** A step after the first email in a campaign's sequence, 1-based. */
 export type FollowUpStep = number;
 
 export type DeliveryStatus = "PREPARING" | "SENDING" | "SENT" | "FAILED" | "UNCERTAIN";

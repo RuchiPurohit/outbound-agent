@@ -279,10 +279,12 @@ for the contact IDs explicitly checked in the dashboard generation request.
 Follow-up generation is a separate dashboard workflow:
 `prompts/follow-up-generation.md`. Generate follow-up drafts only for the sent
 first-touch outreach IDs explicitly checked in the Sent & follow-ups tab.
-Each first touch follows its client's sequence (Clients page): up to 8 steps
-after the first email, each with a wait in days after the previous step. Email
-steps are drafted one at a time, only for the current step; the default
-sequence is Follow-up 1 (the live demo link) and Follow-up 2 (closing the loop),
+Each first touch follows its campaign's sequence (the campaign's Sequence
+tab): optional first-email guidance, then up to 8 steps after the first email,
+each with a wait in days after the previous step. Email steps are drafted one
+at a time, only for the current step; a new campaign's steps come from its
+client's default follow-ups (client Follow-up generation rules), which for
+ConvoKit are Follow-up 1 (the live demo link) and Follow-up 2 (closing the loop),
 7 days apart. Task steps (LinkedIn, call, other) are done by the human and
 marked done or skipped in the dashboard; never draft or perform them.
 Follow-ups stay DRAFT until human review, keep the first touch's subject and

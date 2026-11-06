@@ -567,4 +567,7 @@ export const migrations: readonly string[] = [
       PRIMARY KEY (outreach_id, step)
     ) STRICT;
   `,
+  `
+    ALTER TABLE campaigns ADD COLUMN sequence TEXT;
+  `,
 ];

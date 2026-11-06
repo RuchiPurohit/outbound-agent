@@ -198,15 +198,22 @@ the existing `data/campaign-*.md` ignore pattern.
 
 ### Follow-ups
 
-Sent first touches move to the **Sent & follow-ups** tab and follow their
-client's **sequence**, edited under Follow-up generation on the Clients page:
-up to 8 steps after the first email, each with a wait in days after the
-previous step. A step is either an **email** (drafted for the emails you check,
-sent as a reply in the same thread) or a **manual task** (LinkedIn, call, or
-other) that you do yourself and record with **Mark done** or **Skip step**; the
-next step's wait starts then.
+Each campaign has its own **Sequence** tab (Pipeline · Sequence · Sent &
+follow-ups), laid out as a timeline like Apollo's. **Step 1 · First email** takes
+optional guidance for this campaign's segment, passed to first-email drafting
+within the client's email rules. Up to 8 more steps follow, joined by wait chips
+("Send email in 7 days", "Task due in 3 days"); add steps between or after,
+move them up or down, or remove them, then **Save changes**. A step is either an
+**email** (drafted for the emails you check on Sent & follow-ups and sent as a
+reply in the same thread) or a **manual task** (LinkedIn, call, or other) that
+you do yourself and record there with **Mark done** or **Skip step**; the next
+step's wait starts then. A step some prospects already reached keeps its type.
 
-The default sequence is today's two emails, 7 days apart:
+A new campaign starts with its client's **default follow-ups**: Follow-up 1 and
+(optionally) Follow-up 2 from the client's Follow-up generation rules on the
+Clients page, the client's default wait apart. **Reset to client defaults** on
+the Sequence tab rebuilds a campaign's steps from them. ConvoKit's defaults are
+two emails, 7 days apart:
 
 1. **Follow-up 1** shares the live demo (`https://convokit.app/demo?for=<Company>&s=<scenario>`,
    scenario per segment in [docs/PRODUCT.md](docs/PRODUCT.md)).

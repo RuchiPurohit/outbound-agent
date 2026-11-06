@@ -2,8 +2,9 @@ import type { SqliteDatabase } from "./database.js";
 import { randomUUID } from "node:crypto";
 import { patternCandidates } from "../email/guessPatterns.js";
 import {
-  DEFAULT_STEP_DELAY_DAYS, defaultSetup, defaultSequence, resolveSetup,
-  type ClientSetup, type FieldValue, type SectionId, type SequenceStep,
+  DEFAULT_STEP_DELAY_DAYS, defaultSetup, defaultSequence, defaultSequenceFromSetup, parseCampaignSequence, resolveSetup,
+  sequenceFromClientSettings,
+  type CampaignSequence, type ClientSetup, type FieldValue, type SectionId, type SequenceStep,
 } from "../prompts/clientSetup.js";
 import type {
   Campaign, CampaignStatus, ChatFeatureStatus, ChatImplementation, Company, CompanyScoreBreakdown,
@@ -134,11 +135,12 @@ export interface ContactRecipient {
 export class OutboundStore {
   public constructor(private readonly db: SqliteDatabase) {}
 
-  createCampaign(input: { name: string; segment: string; status?: CampaignStatus; clientId?: number }): Campaign {
-    if (input.clientId !== undefined) this.requireClient(input.clientId);
+  createCampaign(input: { name: string; segment: string; status?: CampaignStatus; clientId?: number; sequence?: CampaignSequence }): Campaign {
+    const client = input.clientId === undefined ? undefined : this.requireClient(input.clientId);
+    const sequence = input.sequence ?? { firstEmailGuidance: "", steps: client ? defaultSequenceFromSetup(client.setup) : defaultSequence() };
     const result = this.db.prepare(`
-      INSERT INTO campaigns (name, segment, created_at, status, client_id) VALUES (?, ?, ?, ?, ?)
-    `).run(input.name, input.segment, now(), input.status ?? "DRAFT", input.clientId ?? null);
+      INSERT INTO campaigns (name, segment, created_at, status, client_id, sequence) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(input.name, input.segment, now(), input.status ?? "DRAFT", input.clientId ?? null, JSON.stringify(sequence));
     return this.getCampaign(Number(result.lastInsertRowid))!;
   }
 
@@ -151,8 +153,25 @@ export class OutboundStore {
       const client = this.listClients()[0] ?? this.createClient({ name: "ConvoKit", setup: defaultSetup("convokit") });
       this.db.prepare("UPDATE campaigns SET client_id = ? WHERE client_id IS NULL").run(client.id);
       this.backfillConvokitClient();
+      this.backfillCampaignSequences();
       return this.getClient(client.id)!;
     })();
+  }
+
+  /**
+   * Gives each campaign created before campaigns had sequences its own copy of the sequence its
+   * client described then (a saved client sequence, or its Follow-up 1/2 templates), otherwise
+   * the standard one.
+   */
+  private backfillCampaignSequences(): void {
+    const rows = this.db.prepare(`SELECT ca.id, cl.settings FROM campaigns ca LEFT JOIN clients cl ON cl.id = ca.client_id
+      WHERE ca.sequence IS NULL`).all() as Row[];
+    for (const row of rows) {
+      const settings = row.settings ? JSON.parse(text(row, "settings")) as unknown : undefined;
+      const steps = sequenceFromClientSettings(settings) ?? defaultSequence();
+      this.db.prepare("UPDATE campaigns SET sequence = ? WHERE id = ?")
+        .run(JSON.stringify({ firstEmailGuidance: "", steps }), integer(row, "id"));
+    }
   }
 
   /**
@@ -165,9 +184,23 @@ export class OutboundStore {
     const stored = JSON.parse(text(row, "settings")) as Record<string, Record<string, unknown>>;
     const defaults = defaultSetup("convokit");
     let changed = false;
-    // A missing sequence is rebuilt from the stored Follow-up 1/2 templates when read.
+    // Follow-up templates moved back to the client: take them from a sequence an earlier
+    // version saved on the client, so edits made there are kept.
+    const saved = Array.isArray((stored as { sequence?: unknown }).sequence)
+      ? ((stored as unknown as { sequence: SequenceStep[] }).sequence).filter(({ kind }) => kind === "email") : [];
+    const followUps = stored["follow-up-generation"];
+    if (followUps && !("followUp1" in followUps) && saved[0]) {
+      Object.assign(followUps, { delayDays: saved[0].delayDays, followUp1Name: saved[0].name, followUp1Length: saved[0].length,
+        followUp1: saved[0].instructions, followUp2Name: saved[1]?.name ?? "", followUp2Length: saved[1]?.length ?? "",
+        followUp2: saved[1]?.instructions ?? "" });
+      changed = true;
+    }
+    // Any section or input added since this client was saved gets today's ConvoKit value.
     for (const [sectionId, values] of Object.entries(defaults)) {
-      if (sectionId !== "sequence" && !stored[sectionId]) { stored[sectionId] = values as Record<string, unknown>; changed = true; }
+      if (!stored[sectionId]) { stored[sectionId] = values; changed = true; continue; }
+      for (const [key, value] of Object.entries(values)) {
+        if (!(key in stored[sectionId]!)) { stored[sectionId]![key] = value; changed = true; }
+      }
     }
     // The client documents replace the repository docs an earlier version listed here.
     const docs = stored.profile?.referenceDocs;
@@ -215,35 +248,6 @@ export class OutboundStore {
   updateClientSection(id: number, sectionId: SectionId, values: Record<string, FieldValue>): Client {
     const client = this.requireClient(id);
     const setup = resolveSetup({ ...client.setup, [sectionId]: values });
-    this.db.prepare("UPDATE clients SET settings = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(setup), now(), id);
-    return this.getClient(id)!;
-  }
-
-  /**
-   * Replaces a client's sequence. Steps are stored by position, so a position that already
-   * holds emails must stay an email step and one with completed tasks must stay a task;
-   * otherwise in-flight prospects' records would land under a different step.
-   */
-  updateClientSequence(id: number, steps: SequenceStep[]): Client {
-    const client = this.requireClient(id);
-    const used = (sql: string) => new Set((this.db.prepare(sql).all(id) as Row[]).map((row) => integer(row, "step")));
-    const emailSteps = used(`SELECT DISTINCT f.follow_up_step AS step FROM outreach f
-      JOIN contacts c ON c.id = f.contact_id JOIN companies co ON co.id = c.company_id
-      JOIN campaigns ca ON ca.id = co.campaign_id
-      WHERE ca.client_id = ? AND f.follow_up_of IS NOT NULL AND f.status != 'REJECTED'`);
-    const taskSteps = used(`SELECT DISTINCT t.step AS step FROM sequence_task_completions t
-      JOIN outreach o ON o.id = t.outreach_id JOIN contacts c ON c.id = o.contact_id
-      JOIN companies co ON co.id = c.company_id JOIN campaigns ca ON ca.id = co.campaign_id WHERE ca.client_id = ?`);
-    steps.forEach((step, index) => {
-      const position = index + 1;
-      if (emailSteps.has(position) && step.kind !== "email") {
-        throw new WorkflowError(`Step ${position + 1} already has drafted or sent emails for some prospects, so it must stay an email step. Add new steps after the existing ones instead.`);
-      }
-      if (taskSteps.has(position) && step.kind === "email") {
-        throw new WorkflowError(`Step ${position + 1} was already done as a task for some prospects, so it must stay a task step. Add new steps after the existing ones instead.`);
-      }
-    });
-    const setup = resolveSetup({ ...client.setup, sequence: steps });
     this.db.prepare("UPDATE clients SET settings = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(setup), now(), id);
     return this.getClient(id)!;
   }
@@ -1084,18 +1088,57 @@ export class OutboundStore {
     return row ? outreachFromRow(row) : undefined;
   }
 
-  /** The steps after the first email for this first touch: its client's sequence, else the default. */
+  /** The steps after the first email for this first touch: its campaign's sequence. */
   sequenceFor(firstTouch: Outreach): SequenceStep[] {
     const contact = this.requireContact(firstTouch.contactId);
-    const campaign = this.getCampaign(this.requireCompany(contact.companyId).campaignId);
-    const client = campaign?.clientId == null ? undefined : this.getClient(campaign.clientId);
-    return client ? client.setup.sequence : defaultSequence();
+    return this.requireCampaign(this.requireCompany(contact.companyId).campaignId).sequence.steps;
+  }
+
+  /**
+   * Sequence positions this campaign's prospects already reached, by what they hold. Steps are
+   * stored by position, so a position with emails must stay an email step and one with completed
+   * tasks must stay a task; otherwise in-flight records would land under a different step.
+   */
+  reachedSequenceSteps(campaignId: number): { email: Set<number>; task: Set<number> } {
+    const used = (sql: string) => new Set((this.db.prepare(sql).all(campaignId) as Row[]).map((row) => integer(row, "step")));
+    return {
+      email: used(`SELECT DISTINCT f.follow_up_step AS step FROM outreach f
+        JOIN contacts c ON c.id = f.contact_id JOIN companies co ON co.id = c.company_id
+        WHERE co.campaign_id = ? AND f.follow_up_of IS NOT NULL AND f.status != 'REJECTED'`),
+      task: used(`SELECT DISTINCT t.step AS step FROM sequence_task_completions t
+        JOIN outreach o ON o.id = t.outreach_id JOIN contacts c ON c.id = o.contact_id
+        JOIN companies co ON co.id = c.company_id WHERE co.campaign_id = ?`),
+    };
+  }
+
+  /** The email steps this campaign's client's follow-up rules describe for a new sequence. */
+  clientDefaultSequence(campaignId: number): SequenceStep[] {
+    const campaign = this.requireCampaign(campaignId);
+    const client = campaign.clientId === null ? undefined : this.getClient(campaign.clientId);
+    return client ? defaultSequenceFromSetup(client.setup) : defaultSequence();
+  }
+
+  /** Replaces a campaign's sequence; a step its prospects already reached keeps its type. */
+  updateCampaignSequence(campaignId: number, sequence: CampaignSequence): Campaign {
+    this.requireCampaign(campaignId);
+    const reached = this.reachedSequenceSteps(campaignId);
+    sequence.steps.forEach((step, index) => {
+      const position = index + 1;
+      if (reached.email.has(position) && step.kind !== "email") {
+        throw new WorkflowError(`Step ${position + 1} already has drafted or sent emails for some prospects, so it must stay an email step. Add new steps after the existing ones instead.`);
+      }
+      if (reached.task.has(position) && step.kind === "email") {
+        throw new WorkflowError(`Step ${position + 1} was already done as a task for some prospects, so it must stay a task step. Add new steps after the existing ones instead.`);
+      }
+    });
+    this.db.prepare("UPDATE campaigns SET sequence = ? WHERE id = ?").run(JSON.stringify(sequence), campaignId);
+    return this.getCampaign(campaignId)!;
   }
 
   /**
    * Where a sent first touch is in its sequence. Each step is due its wait after the previous
    * step was sent (email) or done/skipped (task). Steps already recorded are kept even when the
-   * client's sequence was later shortened.
+   * campaign's sequence was later shortened.
    */
   sequenceState(outreachId: number): SequenceState {
     const first = this.requireOutreach(outreachId);
@@ -1623,7 +1666,7 @@ const nullableInteger = (row: Row, key: string): number | null => row[key] as nu
 function campaignFromRow(row: Row): Campaign {
   return { id: integer(row, "id"), name: text(row, "name"), segment: text(row, "segment"),
     createdAt: text(row, "created_at"), status: text(row, "status") as Campaign["status"],
-    clientId: nullableInteger(row, "client_id") };
+    clientId: nullableInteger(row, "client_id"), sequence: parseCampaignSequence(nullableText(row, "sequence")) };
 }
 function clientFromRow(row: Row): Client {
   return { id: integer(row, "id"), name: text(row, "name"), setup: resolveSetup(JSON.parse(text(row, "settings"))),

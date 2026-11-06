@@ -14,7 +14,7 @@ Never expand the selection to other sent emails.
    first step after the first email) or `undefined` (skip: a draft is pending,
    the current step is a manual task, or the sequence is finished). The
    dashboard request lists each selected email's step name, length rule, and
-   template from the client's sequence; follow them. With the default sequence,
+   template from the campaign's sequence; follow them. With the default sequence,
    step 1 is Follow-up 1 and step 2 is Follow-up 2 below.
 3. Read the first touch's subject, body, and cited signal
    (getResearchRecord(researchId)), plus the company, listProspectSignals(contactId),

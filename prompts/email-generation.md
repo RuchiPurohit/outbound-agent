@@ -5,6 +5,10 @@ the dashboard. Never modify application code or approval states.
 
 For generation:
 
+The dashboard request may include this campaign's first-email guidance (step 1
+of its sequence). Apply it within docs/EMAIL_RULES.md; it never overrides the
+structure, accuracy rules, or confirmed capabilities.
+
 The dashboard supplies an explicit contact ID selection. Process ONLY those
 checked IDs. An empty or missing selection means no drafting is authorized.
 Never expand the selection to other eligible prospects.

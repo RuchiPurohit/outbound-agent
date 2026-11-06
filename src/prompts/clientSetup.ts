@@ -68,7 +68,14 @@ export interface SequenceStep {
   length: string;
 }
 
-export type ClientSetup = Record<SectionId, Record<string, FieldValue>> & { sequence: SequenceStep[] };
+export type ClientSetup = Record<SectionId, Record<string, FieldValue>>;
+
+/** A campaign's sequence: guidance for its first emails (step 1) and the steps after them. */
+export interface CampaignSequence {
+  /** Campaign-specific guidance for first emails, applied within the client's email rules. */
+  firstEmailGuidance: string;
+  steps: SequenceStep[];
+}
 
 const SCORE_FACTORS = [
   ["workflowFit", "Messaging workflow fit", 30],
@@ -78,6 +85,9 @@ const SCORE_FACTORS = [
   ["stackFit", "Supported stack fit", 10],
   ["liveProduct", "Live-product evidence", 10],
 ] as const;
+
+const FOLLOW_UP_1 = "Hi <first name>,\n\nI turned <the idea from the first email, in 3–6 words> into something you can try in 30 seconds, no signup:\n\nhttps://convokit.app/demo?for=<Company>&s=<scenario>\n\nIt opens on <the scenario>. <One sentence tying it to the prospect's product.> You play both sides: type on the left and it lands on the right instantly, with typing indicators and history. Scan the QR code to make your phone the second screen.\n\n<Optional, only when it fits: one sentence on a confirmed capability.>\n\nConvoKit gives you a ready-made chat layer, so <Company> can add this in a day instead of building it from scratch. The code behind it is on the same page.\n\nIf it's not a priority right now, a quick \"not now\" is completely fine.\n\nRuchi\nhttps://convokit.app/";
+const FOLLOW_UP_2 = "Hi <first name>,\n\nLast note from me on this. Two quick options:\n\n1. If <the workflow from the first email> isn't on <Company>'s roadmap, is there someone else who owns <collaboration / messaging / support>? Happy to send them the demo instead.\n2. If the timing is just off, I'll leave it here. The demo stays up:\n   https://convokit.app/demo?for=<Company>&s=<scenario>\n\nEither way, thanks for reading.\n\nRuchi\nhttps://convokit.app/";
 
 export const SECTIONS: readonly SetupSection[] = [
   {
@@ -261,7 +271,7 @@ export const SECTIONS: readonly SetupSection[] = [
   {
     id: "follow-up-generation",
     title: "Follow-up generation",
-    summary: "Drafts the next email step of the client's sequence for checked sent emails.",
+    summary: "Drafts the next email step of each campaign's sequence for checked sent emails.",
     source: "prompts/follow-up-generation.md",
     fields: [
       { key: "demoLink", label: "Link every follow-up email carries", kind: "text", convokit: "https://convokit.app/demo?for=<Company>&s=<scenario>" },
@@ -275,6 +285,16 @@ export const SECTIONS: readonly SetupSection[] = [
           "(omit s): anything else → a live chat with a visitor"] },
       { key: "bannedPhrases", label: "Banned phrases", kind: "list",
         convokit: ["just checking in", "bumping this", "following up on my last email"] },
+      { key: "delayDays", label: "Default wait between follow-ups (days)", kind: "number", min: 0, max: 90,
+        help: "New campaigns start with Follow-up 1 and Follow-up 2 below, this many days apart.", convokit: 7 },
+      { key: "followUp1Name", label: "Follow-up 1 name", kind: "text", convokit: "Follow-up 1: live demo" },
+      { key: "followUp1Length", label: "Follow-up 1 length", kind: "text", convokit: "Prefer 90–130 words and never exceed 150" },
+      { key: "followUp1", label: "Follow-up 1 template", kind: "textarea", convokit: FOLLOW_UP_1 },
+      { key: "followUp2Name", label: "Follow-up 2 name", kind: "text", optional: true, convokit: "Follow-up 2: close the loop" },
+      { key: "followUp2Length", label: "Follow-up 2 length", kind: "text", optional: true,
+        convokit: "Prefer 50–90 words and never exceed 110. It is the last email in the sequence" },
+      { key: "followUp2", label: "Follow-up 2 template", kind: "textarea", optional: true,
+        help: "Leave empty for a single follow-up.", convokit: FOLLOW_UP_2 },
     ],
   },
 ];
@@ -388,24 +408,30 @@ export function getSection(id: string): SetupSection | undefined {
 const blankValue = (field: SetupField): FieldValue =>
   field.kind === "list" ? [] : field.kind === "text" || field.kind === "textarea" ? "" : field.convokit;
 
-const FOLLOW_UP_1 = "Hi <first name>,\n\nI turned <the idea from the first email, in 3–6 words> into something you can try in 30 seconds, no signup:\n\nhttps://convokit.app/demo?for=<Company>&s=<scenario>\n\nIt opens on <the scenario>. <One sentence tying it to the prospect's product.> You play both sides: type on the left and it lands on the right instantly, with typing indicators and history. Scan the QR code to make your phone the second screen.\n\n<Optional, only when it fits: one sentence on a confirmed capability.>\n\nConvoKit gives you a ready-made chat layer, so <Company> can add this in a day instead of building it from scratch. The code behind it is on the same page.\n\nIf it's not a priority right now, a quick \"not now\" is completely fine.\n\nRuchi\nhttps://convokit.app/";
-const FOLLOW_UP_2 = "Hi <first name>,\n\nLast note from me on this. Two quick options:\n\n1. If <the workflow from the first email> isn't on <Company>'s roadmap, is there someone else who owns <collaboration / messaging / support>? Happy to send them the demo instead.\n2. If the timing is just off, I'll leave it here. The demo stays up:\n   https://convokit.app/demo?for=<Company>&s=<scenario>\n\nEither way, thanks for reading.\n\nRuchi\nhttps://convokit.app/";
 
-/** Today's two-email follow-up sequence, used for ConvoKit and campaigns without a client. */
+/**
+ * The email steps a new campaign starts with, from the client's follow-up rules: Follow-up 1,
+ * and Follow-up 2 when the client has a template for it, each the client's default wait apart.
+ */
+export function defaultSequenceFromSetup(setup: ClientSetup): SequenceStep[] {
+  const rules = setup["follow-up-generation"];
+  const text = (key: string) => String(rules[key] ?? "").trim();
+  const wait = Number.isInteger(rules.delayDays) ? rules.delayDays as number : DEFAULT_STEP_DELAY_DAYS;
+  const step = (n: 1 | 2): SequenceStep => ({ kind: "email", delayDays: wait, name: text(`followUp${n}Name`) || `Follow-up ${n}`,
+    length: text(`followUp${n}Length`), instructions: text(`followUp${n}`) });
+  return text("followUp2") ? [step(1), step(2)] : [step(1)];
+}
+
+/** ConvoKit's default follow-ups, used for campaigns without a client. */
 export function defaultSequence(): SequenceStep[] {
-  return [
-    { kind: "email", delayDays: DEFAULT_STEP_DELAY_DAYS, name: "Follow-up 1: live demo",
-      length: "Prefer 90–130 words and never exceed 150", instructions: FOLLOW_UP_1 },
-    { kind: "email", delayDays: DEFAULT_STEP_DELAY_DAYS, name: "Follow-up 2: close the loop",
-      length: "Prefer 50–90 words and never exceed 110. It is the last email in the sequence", instructions: FOLLOW_UP_2 },
-  ];
+  return defaultSequenceFromSetup(defaultSetup("convokit"));
 }
 
 /** The inputs for a client: ConvoKit's current values, or blanks for a new client. */
 export function defaultSetup(kind: "convokit" | "blank"): ClientSetup {
   const sections = Object.fromEntries(ALL_SECTIONS.map((section) => [section.id, Object.fromEntries(section.fields
     .map((field) => [field.key, kind === "convokit" ? field.convokit : blankValue(field)]))]));
-  return { ...sections, sequence: kind === "convokit" ? defaultSequence() : [] } as ClientSetup;
+  return sections as ClientSetup;
 }
 
 function validStep(value: unknown): SequenceStep | undefined {
@@ -417,22 +443,33 @@ function validStep(value: unknown): SequenceStep | undefined {
     instructions: String(step.instructions ?? ""), length: String(step.length ?? "") };
 }
 
+const validSteps = (value: unknown[]): SequenceStep[] =>
+  value.map(validStep).filter((step): step is SequenceStep => !!step).slice(0, MAX_SEQUENCE_STEPS);
+
+/** A campaign's stored sequence, or the standard one when none is stored or it is unreadable. */
+export function parseCampaignSequence(stored: string | null): CampaignSequence {
+  try {
+    const raw = stored ? JSON.parse(stored) as { firstEmailGuidance?: unknown; steps?: unknown } : undefined;
+    if (raw && Array.isArray(raw.steps)) {
+      return { firstEmailGuidance: typeof raw.firstEmailGuidance === "string" ? raw.firstEmailGuidance : "", steps: validSteps(raw.steps) };
+    }
+  } catch { /* fall through to the standard sequence */ }
+  return { firstEmailGuidance: "", steps: defaultSequence() };
+}
+
 /**
- * A stored sequence, or, for a client saved before sequences existed, one built from its
- * Follow-up 1 and Follow-up 2 templates.
+ * The follow-up steps an older client's stored settings describe: a sequence saved on the
+ * client, or one built from its Follow-up 1 and Follow-up 2 templates. Undefined when the
+ * settings describe neither. Used once to give existing campaigns their own sequence.
  */
-function resolveSequence(raw: Record<string, Record<string, unknown> | undefined> & { sequence?: unknown }): SequenceStep[] {
-  if (Array.isArray(raw.sequence)) {
-    return raw.sequence.map(validStep).filter((step): step is SequenceStep => !!step).slice(0, MAX_SEQUENCE_STEPS);
-  }
+export function sequenceFromClientSettings(stored: unknown): SequenceStep[] | undefined {
+  const raw = (stored && typeof stored === "object" ? stored : {}) as Record<string, Record<string, unknown> | undefined> & { sequence?: unknown };
+  if (Array.isArray(raw.sequence)) return validSteps(raw.sequence);
   const legacy = raw["follow-up-generation"];
-  if (!legacy || typeof legacy.followUp1 !== "string" || !legacy.followUp1.trim()) return [];
-  const [first, second] = defaultSequence();
-  return [
-    { ...first!, instructions: legacy.followUp1, length: String(legacy.followUp1Length ?? first!.length) },
-    ...(typeof legacy.followUp2 === "string" && legacy.followUp2.trim()
-      ? [{ ...second!, instructions: legacy.followUp2, length: String(legacy.followUp2Length ?? second!.length) }] : []),
-  ];
+  if (!legacy || typeof legacy.followUp1 !== "string" || !legacy.followUp1.trim()) return undefined;
+  // Older settings had templates without names or a wait; fill those from ConvoKit's defaults.
+  const defaults = defaultSetup("convokit")["follow-up-generation"];
+  return defaultSequenceFromSetup(resolveSetup({ ...raw, "follow-up-generation": { ...defaults, followUp2: "", ...legacy } }));
 }
 
 const validValue = (field: SetupField, value: unknown): value is FieldValue => {
@@ -449,14 +486,14 @@ export function resolveSetup(stored: unknown): ClientSetup {
     const value = raw[section.id]?.[field.key];
     return [field.key, validValue(field, value) ? value : blankValue(field)];
   }))]));
-  return { ...sections, sequence: resolveSequence(raw) } as ClientSetup;
+  return sections as ClientSetup;
 }
 
 /**
  * Parses the sequence editor. Rows arrive as parallel arrays; a row marked for removal or
  * left completely blank is dropped.
  */
-export function parseSequenceForm(form: { getAll(name: string): string[] }): SequenceStep[] {
+export function parseSequenceForm(form: { getAll(name: string): string[]; get(name: string): string | null }): CampaignSequence {
   const kinds = form.getAll("kind");
   const removed = new Set(form.getAll("remove"));
   const steps: SequenceStep[] = [];
@@ -475,25 +512,15 @@ export function parseSequenceForm(form: { getAll(name: string): string[] }): Seq
     steps.push({ kind: kind as StepKind, delayDays, name, instructions, length: kind === "email" ? length : "" });
   });
   if (steps.length > MAX_SEQUENCE_STEPS) throw new Error(`A sequence can have at most ${MAX_SEQUENCE_STEPS} steps after the first email`);
-  return steps;
+  const firstEmailGuidance = (form.get("firstEmailGuidance") ?? "").replace(/\r\n/g, "\n").trim();
+  if (firstEmailGuidance.length > 5000) throw new Error("Keep the first-email guidance under 5000 characters");
+  return { firstEmailGuidance, steps };
 }
 
 /** Problems that would leave a step without what it needs, for the sequence's status badge. */
-export function sequenceIssues(setup: ClientSetup): string[] {
-  return setup.sequence.flatMap((step, index) => !step.instructions.trim()
+export function sequenceIssues(steps: SequenceStep[]): string[] {
+  return steps.flatMap((step, index) => !step.instructions.trim()
     ? [`Step ${index + 2} (${step.name}) has no ${step.kind === "email" ? "template" : "instructions"}`] : []);
-}
-
-/** The sequence as Markdown, for prompts and EMAIL_RULES.md. */
-export function sequenceMarkdown(setup: ClientSetup, level = "##"): string {
-  if (!setup.sequence.length) return "The sequence has no steps after the first email, so no follow-up is drafted.";
-  return setup.sequence.map((step, index) => {
-    const when = `${step.delayDays} day(s) after the previous step`;
-    const body = step.kind === "email"
-      ? `${step.length ? `${step.length}.\n\n` : ""}\`\`\`text\n${step.instructions.trim() || missing("template")}\n\`\`\``
-      : `Manual ${STEP_KINDS[step.kind].toLowerCase()} done by the human; never drafted or sent.${step.instructions.trim() ? `\n\n${step.instructions.trim()}` : ""}`;
-    return `${level} Step ${index + 2}: ${step.name}\n\n${STEP_KINDS[step.kind]}, ${when}.\n\n${body}`;
-  }).join("\n\n");
 }
 
 /** Parses one section's form submission; throws a readable error for invalid input. */
@@ -942,9 +969,11 @@ ${s.bullets("scenarios")}
 ` : ""}
 ## Sequence
 
-Step 1 is the first email. The steps after it:
-
-${sequenceMarkdown(setup, "###")}
+Each campaign has its own sequence (its Sequence tab): step 1 is the first email,
+followed by up to 8 email or manual task steps, each after its own wait. The
+drafting request lists, for every selected email, the step to write with its
+name, length rule, and template. Follow those. Manual task steps (LinkedIn,
+call, other) are done by the human and never drafted.
 
 ## Every follow-up email
 
@@ -980,7 +1009,7 @@ export function missingInputs(sectionId: SectionId, setup: ClientSetup): string[
     return !field.optional && ((field.kind === "list" && (value as string[]).length === 0)
       || ((field.kind === "text" || field.kind === "textarea") && !String(value).trim()));
   }).map(({ label }) => label);
-  return sectionId === "follow-up-generation" ? [...fields, ...sequenceIssues(setup)] : fields;
+  return fields;
 }
 
 // ---------------------------------------------------------------------------
@@ -1265,10 +1294,12 @@ ${email.bullets("bannedPhrases")}
 
 Each follow-up is its own outreach record linked to the first touch, replies in
 the same thread (\`Re: <original subject>\`), keeps the first touch's cited
-signal, and needs explicit human approval and send confirmation. Each step
-unlocks its wait after the previous step was sent or completed, and no step
-runs once the prospect is marked as replied or the first email bounced. The
-sequence below is the whole sequence; there are no other follow-ups.
+signal, and needs explicit human approval and send confirmation. Each campaign
+has its own sequence (its Sequence tab): the steps after the first email, each
+an email or a manual task with its own wait and template. Each step unlocks its
+wait after the previous step was sent or completed, and no step runs once the
+prospect is marked as replied or the first email bounced. A drafting request
+lists the step to write.
 
 Every follow-up email carries exactly one link (${followUp.text("demoLink")}),
 never claims the recipient read, opened, clicked, or ignored an earlier email,
@@ -1276,8 +1307,27 @@ and never uses:
 
 ${followUp.bullets("bannedPhrases")}
 
-${sequenceMarkdown(setup, "###")}
+### Default follow-up emails
 
+A new campaign's sequence starts with these, ${followUp.num("delayDays")} day(s) apart. Each campaign can
+then change its own steps.
+
+#### ${followUp.text("followUp1Name")}
+
+${followUp.text("followUp1Length")}.
+
+\`\`\`text
+${followUp.text("followUp1")}
+\`\`\`
+${String(setup["follow-up-generation"].followUp2 ?? "").trim() ? `
+#### ${followUp.text("followUp2Name")}
+
+${followUp.text("followUp2Length")}.
+
+\`\`\`text
+${followUp.text("followUp2")}
+\`\`\`
+` : ""}
 ## Persistence and human review
 
 Record fit (\`HIGH\`, \`MEDIUM\`, or \`LOW\`), prospect type, the sales thesis, 2–4

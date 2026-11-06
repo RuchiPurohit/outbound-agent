@@ -1,0 +1,46 @@
+import type { OutboundStore } from "../db/store.js";
+import type { Campaign } from "../db/types.js";
+import {
+  DEFAULT_STEP_DELAY_DAYS, MAX_SEQUENCE_STEPS, sequenceIssues, STEP_KINDS, type SequenceStep, type StepKind,
+} from "../prompts/clientSetup.js";
+
+const escapeHtml = (value: unknown): string => String(value ?? "")
+  .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+  .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+
+const SHORT_LABELS: Record<StepKind, string> = { email: "Email", linkedin: "LinkedIn task", call: "Call task", task: "Other task" };
+const ICONS: Record<StepKind, string> = { email: "✉", linkedin: "in", call: "☎", task: "✓" };
+
+/** One step card with the wait chip above it. `locked` keeps the type of a step prospects reached. */
+function stepItem(step: SequenceStep | undefined, index: number, locked: "email" | "task" | undefined, open: boolean): string {
+  const kind = step?.kind ?? "email";
+  const kinds = Object.entries(STEP_KINDS).map(([value, label]) =>
+    `<option value="${value}"${kind === value ? " selected" : ""}${locked && (locked === "email") !== (value === "email") ? " disabled" : ""}>${escapeHtml(label)}</option>`).join("");
+  const lockNote = locked
+    ? `<p class="seq-lock"><span class="badge UNKNOWN">Reached by prospects</span> This step must stay ${locked === "email" ? "an email" : "a task"} because some prospects already ${locked === "email" ? "have its email drafted or sent" : "completed it"}. You can still rename it, edit it, and change its wait.</p>` : "";
+  return `<div class="seq-item"${locked ? ` data-locked="${locked}"` : ""}><div class="wait-chip"><span aria-hidden="true">⏱</span><span class="chip-verb">${kind === "email" ? "Send email in" : "Task due in"}</span><input type="number" name="delayDays" min="0" max="90" value="${step?.delayDays ?? DEFAULT_STEP_DELAY_DAYS}" required aria-label="Days after the previous step"><span>day(s)</span></div><details class="seq-card"${open ? " open" : ""}><summary><span class="seq-icon" aria-hidden="true">${ICONS[kind]}</span><strong class="seq-title">Step ${index + 2}: ${SHORT_LABELS[kind]}</strong><span class="seq-name-preview">${escapeHtml(step?.name ?? "")}</span><span class="seq-ops"><button type="button" class="secondary" data-op="up" title="Move up" aria-label="Move up">↑</button><button type="button" class="secondary" data-op="down" title="Move down" aria-label="Move down">↓</button><button type="button" class="secondary" data-op="remove" title="Remove step" aria-label="Remove step"${locked ? " disabled" : ""}>✕</button></span></summary><div class="seq-body">${lockNote}<div class="seq-grid"><label><span>Type</span><select name="kind">${kinds}</select></label><label><span>Name</span><input name="name" value="${escapeHtml(step?.name ?? "")}" maxlength="120" placeholder="e.g. Follow-up 1: live demo"></label></div><label class="seq-email-only"${kind === "email" ? "" : " hidden"}><span>Length rule</span><input name="length" value="${escapeHtml(step?.length ?? "")}" maxlength="300" placeholder="Prefer 50–90 words and never exceed 110"></label><label><span class="seq-instr-label">${kind === "email" ? "Template" : "Task note (what to do)"}</span><textarea name="instructions" rows="${step ? Math.min(14, Math.max(4, step.instructions.split("\n").length + 1)) : 4}" maxlength="10000" placeholder="${kind === "email" ? "Hi <first name>, …" : "e.g. View their profile and send a connection request mentioning the demo"}">${escapeHtml(step?.instructions ?? "")}</textarea></label></div></details><div class="seq-add"><button type="button" class="secondary" data-op="add-after">+ Add step</button></div></div>`;
+}
+
+/** The campaign's Sequence tab: Step 1 (first email) and the steps after it, as a timeline. */
+export function renderSequenceEditor(store: OutboundStore, campaign: Campaign): string {
+  const { steps, firstEmailGuidance } = campaign.sequence;
+  const reached = store.reachedSequenceSteps(campaign.id);
+  const lockFor = (index: number) => reached.email.has(index + 1) ? "email" as const : reached.task.has(index + 1) ? "task" as const : undefined;
+  const issues = sequenceIssues(steps);
+  const items = steps.map((step, index) => stepItem(step, index, lockFor(index), !step.instructions.trim())).join("");
+  const client = campaign.clientId === null ? undefined : store.getClient(campaign.clientId);
+  const rulesLink = client ? `<a href="/?client=${client.id}&amp;open=doc-email-rules#section-doc-email-rules">${escapeHtml(client.name)}'s email rules</a>` : "the client's email rules";
+  return `<section class="card span12" id="sequence"><form method="post" action="/campaigns/${campaign.id}/sequence" id="sequence-form"><div class="cardhead"><div><span class="eyebrow">Sequence for this campaign's segment</span><h2 id="seq-count">First email + ${steps.length} step(s)</h2></div><div class="actions" style="align-items:center">${issues.length ? `<span class="badge PENDING" title="${escapeHtml(issues.join("; "))}">${issues.length} step(s) missing a template or note</span>` : ""}<button>Save changes</button></div></div><p class="muted">Each prospect moves through these steps after you send their first email. Email steps are drafted on the <a href="/campaigns/${campaign.id}/follow-ups">Sent &amp; follow-ups</a> tab as replies in the same thread and need your approval and a send confirmation. Task steps are yours to do and mark done there. Each step's wait starts when the previous step is sent or done, and a reply or bounce stops the sequence.</p><div class="timeline"><div class="wait-chip start"><span aria-hidden="true">⏱</span><span>Sent after your approval</span></div><details class="seq-card first" open><summary><span class="seq-icon" aria-hidden="true">✉</span><strong class="seq-title">Step 1: First email</strong><span class="seq-name-preview">Drafted per prospect from their research</span></summary><div class="seq-body"><label><span>Guidance for this campaign's first emails (optional)</span><textarea name="firstEmailGuidance" rows="4" maxlength="5000" placeholder="e.g. Lead with how players coordinate matches; mention our Flutter SDK; keep it under 90 words.">${escapeHtml(firstEmailGuidance)}</textarea><small class="field-help">Applied within ${rulesLink}, which still decide structure, tone, and what may be claimed.</small></label></div></details><div class="seq-add"><button type="button" class="secondary" data-op="add-first">+ Add step</button></div><div id="seq-steps">${items}</div></div><template id="seq-step-template">${stepItem(undefined, 0, undefined, true)}</template></form><form method="post" action="/campaigns/${campaign.id}/sequence/reset" class="seq-reset" onsubmit="return confirm(this.dataset.confirm)" data-confirm="${escapeHtml(`Replace this campaign's steps with ${client ? `${client.name}'s` : "the"} default follow-ups? First-email guidance is kept. Unsaved edits above are lost.`)}"><p class="muted field-help">Default follow-ups come from ${client ? `<a href="/?client=${client.id}&amp;open=follow-up-generation#section-follow-up-generation">${escapeHtml(client.name)}'s follow-up rules</a>` : "the client's follow-up rules"}; new campaigns start with them.</p><button class="secondary">Reset to client defaults</button></form></section><script>(function(){
+var form=document.getElementById('sequence-form');if(!form)return;var list=document.getElementById('seq-steps'),tpl=document.getElementById('seq-step-template'),max=${MAX_SEQUENCE_STEPS};
+var labels=${JSON.stringify(SHORT_LABELS)},icons=${JSON.stringify(ICONS)};
+function refresh(){var items=list.querySelectorAll('.seq-item');items.forEach(function(it,i){var kind=it.querySelector('[name=kind]').value;it.querySelector('.seq-title').textContent='Step '+(i+2)+': '+labels[kind];it.querySelector('.seq-icon').textContent=icons[kind];it.querySelector('.chip-verb').textContent=kind==='email'?'Send email in':'Task due in';it.querySelector('.seq-email-only').hidden=kind!=='email';it.querySelector('.seq-instr-label').textContent=kind==='email'?'Template':'Task note (what to do)';it.querySelector('[data-op=up]').disabled=i===0;it.querySelector('[data-op=down]').disabled=i===items.length-1;});
+document.getElementById('seq-count').textContent='First email + '+items.length+' step(s)';form.querySelectorAll('[data-op=add-first],[data-op=add-after]').forEach(function(b){b.disabled=items.length>=max;});}
+form.addEventListener('click',function(e){var b=e.target.closest('[data-op]');if(!b)return;e.preventDefault();var op=b.dataset.op,it=b.closest('.seq-item');
+if(op==='add-first'||op==='add-after'){if(list.children.length>=max)return;var node=tpl.content.firstElementChild.cloneNode(true);if(op==='add-first')list.insertBefore(node,list.firstChild);else it.after(node);node.querySelector('[name=name]').focus();}
+else if(op==='up'&&it.previousElementSibling)list.insertBefore(it,it.previousElementSibling);
+else if(op==='down'&&it.nextElementSibling)list.insertBefore(it.nextElementSibling,it);
+else if(op==='remove'&&!it.dataset.locked)it.remove();refresh();});
+form.addEventListener('change',function(e){if(e.target.name==='kind')refresh();});
+form.addEventListener('input',function(e){if(e.target.name==='name')e.target.closest('.seq-item').querySelector('.seq-name-preview').textContent=e.target.value;});
+refresh();})();</script>`;
+}
