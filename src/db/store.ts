@@ -1,10 +1,11 @@
 import type { SqliteDatabase } from "./database.js";
 import { randomUUID } from "node:crypto";
 import { patternCandidates } from "../email/guessPatterns.js";
+import { defaultSetup, resolveSetup, type ClientSetup, type FieldValue, type SectionId } from "../prompts/clientSetup.js";
 import type {
   Campaign, CampaignStatus, ChatFeatureStatus, ChatImplementation, Company, CompanyScoreBreakdown,
   Contact, EmailGuessConfidence, EmailGuessPattern, EmailRecoveryOutcome, EmailStatus, FollowUpStep, GuessVerification, Outreach, ResearchRecord,
-  ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch, EmailDelivery, Suppression,
+  ReviewStatus, WorkflowRun, WorkflowRunKind, ProspectResearch, EmailDelivery, Suppression, Client,
 } from "./types.js";
 
 type Row = Record<string, unknown>;
@@ -105,11 +106,94 @@ export interface ContactRecipient {
 export class OutboundStore {
   public constructor(private readonly db: SqliteDatabase) {}
 
-  createCampaign(input: { name: string; segment: string; status?: CampaignStatus }): Campaign {
+  createCampaign(input: { name: string; segment: string; status?: CampaignStatus; clientId?: number }): Campaign {
+    if (input.clientId !== undefined) this.requireClient(input.clientId);
     const result = this.db.prepare(`
-      INSERT INTO campaigns (name, segment, created_at, status) VALUES (?, ?, ?, ?)
-    `).run(input.name, input.segment, now(), input.status ?? "DRAFT");
+      INSERT INTO campaigns (name, segment, created_at, status, client_id) VALUES (?, ?, ?, ?, ?)
+    `).run(input.name, input.segment, now(), input.status ?? "DRAFT", input.clientId ?? null);
     return this.getCampaign(Number(result.lastInsertRowid))!;
+  }
+
+  /**
+   * Creates the ConvoKit client from today's prompt values when no client exists yet, and
+   * attaches campaigns created before clients existed to the first client.
+   */
+  ensureDefaultClient(): Client {
+    return this.db.transaction(() => {
+      const client = this.listClients()[0] ?? this.createClient({ name: "ConvoKit", setup: defaultSetup("convokit") });
+      this.db.prepare("UPDATE campaigns SET client_id = ? WHERE client_id IS NULL").run(client.id);
+      this.backfillConvokitClient();
+      return this.getClient(client.id)!;
+    })();
+  }
+
+  /**
+   * Gives a ConvoKit client created by an earlier version the setup sections added since
+   * (e.g. its documents), from today's values, without touching sections it already has.
+   */
+  private backfillConvokitClient(): void {
+    const row = this.db.prepare("SELECT id, settings FROM clients WHERE name = 'ConvoKit' COLLATE NOCASE").get() as Row | undefined;
+    if (!row) return;
+    const stored = JSON.parse(text(row, "settings")) as Record<string, Record<string, unknown>>;
+    const defaults = defaultSetup("convokit");
+    let changed = false;
+    for (const [sectionId, values] of Object.entries(defaults)) {
+      if (!stored[sectionId]) { stored[sectionId] = values; changed = true; }
+    }
+    // The client documents replace the repository docs an earlier version listed here.
+    const docs = stored.profile?.referenceDocs;
+    if (JSON.stringify(docs) === JSON.stringify(["AGENTS.md", "docs/ICP.md", "docs/PRODUCT.md", "docs/EMAIL_RULES.md"])) {
+      stored.profile!.referenceDocs = ["AGENTS.md"]; changed = true;
+    }
+    if (changed) {
+      this.db.prepare("UPDATE clients SET settings = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(stored), now(), integer(row, "id"));
+    }
+  }
+
+  createClient(input: { name: string; setup?: ClientSetup }): Client {
+    const name = input.name.trim();
+    if (!name || name.length > 200) throw new WorkflowError("Client name is required (up to 200 characters)");
+    if (this.listClients().some((client) => client.name.toLowerCase() === name.toLowerCase())) {
+      throw new WorkflowError(`A client named ${name} already exists`);
+    }
+    const stamp = now();
+    const result = this.db.prepare("INSERT INTO clients (name, settings, created_at, updated_at) VALUES (?, ?, ?, ?)")
+      .run(name, JSON.stringify(input.setup ?? defaultSetup("blank")), stamp, stamp);
+    return this.getClient(Number(result.lastInsertRowid))!;
+  }
+
+  getClient(id: number): Client | undefined {
+    const row = this.db.prepare("SELECT * FROM clients WHERE id = ?").get(id) as Row | undefined;
+    return row ? clientFromRow(row) : undefined;
+  }
+
+  listClients(): Client[] {
+    return (this.db.prepare("SELECT * FROM clients ORDER BY id").all() as Row[]).map(clientFromRow);
+  }
+
+  renameClient(id: number, name: string): Client {
+    this.requireClient(id);
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.length > 200) throw new WorkflowError("Client name is required (up to 200 characters)");
+    if (this.listClients().some((client) => client.id !== id && client.name.toLowerCase() === trimmed.toLowerCase())) {
+      throw new WorkflowError(`A client named ${trimmed} already exists`);
+    }
+    this.db.prepare("UPDATE clients SET name = ?, updated_at = ? WHERE id = ?").run(trimmed, now(), id);
+    return this.getClient(id)!;
+  }
+
+  /** Replaces one setup section's inputs for a client. */
+  updateClientSection(id: number, sectionId: SectionId, values: Record<string, FieldValue>): Client {
+    const client = this.requireClient(id);
+    const setup = resolveSetup({ ...client.setup, [sectionId]: values });
+    this.db.prepare("UPDATE clients SET settings = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(setup), now(), id);
+    return this.getClient(id)!;
+  }
+
+  private requireClient(id: number): Client {
+    const client = this.getClient(id);
+    if (!client) throw new WorkflowError("Client not found");
+    return client;
   }
 
   getCampaign(id: number): Campaign | undefined {
@@ -1419,7 +1503,12 @@ const nullableInteger = (row: Row, key: string): number | null => row[key] as nu
 
 function campaignFromRow(row: Row): Campaign {
   return { id: integer(row, "id"), name: text(row, "name"), segment: text(row, "segment"),
-    createdAt: text(row, "created_at"), status: text(row, "status") as Campaign["status"] };
+    createdAt: text(row, "created_at"), status: text(row, "status") as Campaign["status"],
+    clientId: nullableInteger(row, "client_id") };
+}
+function clientFromRow(row: Row): Client {
+  return { id: integer(row, "id"), name: text(row, "name"), setup: resolveSetup(JSON.parse(text(row, "settings"))),
+    createdAt: text(row, "created_at"), updatedAt: text(row, "updated_at") };
 }
 function companyFromRow(row: Row): Company {
   return { id: integer(row, "id"), campaignId: integer(row, "campaign_id"), name: text(row, "name"),

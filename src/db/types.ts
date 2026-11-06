@@ -1,3 +1,5 @@
+import type { ClientSetup } from "../prompts/clientSetup.js";
+
 export type CampaignStatus = "DRAFT" | "ACTIVE" | "PAUSED" | "COMPLETED";
 export type ReviewStatus = "DISCOVERED" | "APPROVED" | "REJECTED";
 export type ChatFeatureStatus = "PRESENT" | "NO_PUBLIC_EVIDENCE" | "UNKNOWN";
@@ -31,6 +33,17 @@ export interface Campaign {
   segment: string;
   createdAt: string;
   status: CampaignStatus;
+  /** The client this campaign sells for; null only before the default client is attached. */
+  clientId: number | null;
+}
+
+/** A client whose product is sold, with its per-stage prompt inputs. */
+export interface Client {
+  id: number;
+  name: string;
+  setup: ClientSetup;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Company {
