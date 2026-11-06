@@ -10,9 +10,12 @@ Never expand the selection to other sent emails.
 
 1. For each ID, read getOutreach(id). It must be a first touch
    (`followUpOf` is null) with status SENT. Skip REPLIED and BOUNCED emails.
-2. Call nextFollowUpStep(id). `1` means write Follow-up 1, `2` means write
-   Follow-up 2, and `undefined` means skip it (a follow-up is still pending or
-   both exist).
+2. Call nextFollowUpStep(id). It returns the sequence step to write (`1` is the
+   first step after the first email) or `undefined` (skip: a draft is pending,
+   the current step is a manual task, or the sequence is finished). The
+   dashboard request lists each selected email's step name, length rule, and
+   template from the client's sequence; follow them. With the default sequence,
+   step 1 is Follow-up 1 and step 2 is Follow-up 2 below.
 3. Read the first touch's subject, body, and cited signal
    (getResearchRecord(researchId)), plus the company, listProspectSignals(contactId),
    painHypothesis, and relevance from getProspectResearch(contactId). For
@@ -52,6 +55,7 @@ ID, the step written, the scenario and demo link used, and the created or
 skipped follow-up ID. Summarize the created follow-up IDs.
 
 No messages may be sent, no Gmail drafts created, no sending scheduled, and no
-approval granted. Follow-up 1 unlocks 7 days after the first touch and
-Follow-up 2 7 days after Follow-up 1, each only after an explicit human send
-confirmation in the dashboard.
+approval granted. Each step unlocks its configured wait after the previous step
+was sent or completed (7 days in the default sequence), and an email step only
+after an explicit human send confirmation in the dashboard. Manual task steps
+(LinkedIn, call, other) are never drafted.

@@ -58,7 +58,7 @@ describe("Follow-ups", () => {
       assert.equal(followUp.researchId, f.first.researchId);
       assert.equal(followUp.status, "DRAFT");
       assert.deepEqual(f.store.listOutreach(f.contact.id).map(({ id }) => id), [f.first.id]);
-      assert.throws(() => f.store.createFollowUp({ outreachId: f.first.id, body: "again" }), /already exists/);
+      assert.throws(() => f.store.createFollowUp({ outreachId: f.first.id, body: "again" }), /not an email waiting for a draft/);
       const html = renderFollowUps(f.store, f.campaign.id, f.first.id);
       assert.match(html, /FOLLOW_UP_BODY/);
       assert.match(html, /name="subject"[^>]*readonly/);
@@ -85,7 +85,7 @@ describe("Follow-ups", () => {
       assert.match(mime, new RegExp(`References: <${f.firstDelivery.id}@outbound-agent.local>`));
       assert.equal(f.store.getOutreach(followUp.id)?.status, "SENT");
       assert.equal(f.store.getOutreach(followUp.id)?.followUpStep, 1);
-      assert.match(renderFollowUps(f.store, f.campaign.id), /Follow-up 2 due/);
+      assert.match(renderFollowUps(f.store, f.campaign.id), /Step 3 · Follow-up 2: close the loop due/);
     } finally { f.db.close(); }
   });
 
@@ -212,7 +212,7 @@ describe("Follow-ups", () => {
       assert.match(prompt, new RegExp(`outreach IDs: \\[${f.first.id}\\]`));
       assert.match(prompt, /Do not approve, schedule, or send anything/);
       f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_BODY" });
-      assert.throws(() => validateRequest(f.store, { ...request, outreachIds: [f.first.id] }), /ready for its next follow-up/);
+      assert.throws(() => validateRequest(f.store, { ...request, outreachIds: [f.first.id] }), /has no draft yet/);
     } finally { f.db.close(); }
   });
 
@@ -221,7 +221,7 @@ describe("Follow-ups", () => {
     try {
       const first = f.store.createFollowUp({ outreachId: f.first.id, body: "FOLLOW_UP_1" });
       assert.equal(f.store.nextFollowUpStep(f.first.id), undefined);
-      assert.throws(() => f.store.createFollowUp({ outreachId: f.first.id, body: "too early" }), /already exists/);
+      assert.throws(() => f.store.createFollowUp({ outreachId: f.first.id, body: "too early" }), /not an email waiting for a draft/);
       f.store.approveOutreachForSending(first.id);
       f.backdate(7);
       await f.sending.sendApproved(first.id, { fromEmail: sender, toEmail: "pat@example.com", subject: first.subject, body: first.body });
@@ -235,21 +235,21 @@ describe("Follow-ups", () => {
       assert.equal(second.subject, "Re: Shared workspaces");
       assert.equal(second.researchId, f.first.researchId);
       assert.equal(f.store.nextFollowUpStep(f.first.id), undefined);
-      assert.throws(() => f.store.createFollowUp({ outreachId: f.first.id, body: "third" }), /already exists/);
+      assert.throws(() => f.store.createFollowUp({ outreachId: f.first.id, body: "third" }), /not an email waiting for a draft/);
 
       f.store.approveOutreachForSending(second.id);
       const expected = { fromEmail: sender, toEmail: "pat@example.com", subject: second.subject, body: second.body };
       await assert.rejects(f.sending.sendApproved(second.id, expected), /not due until/);
-      assert.match(renderFollowUps(f.store, f.campaign.id), /7 days after Follow-up 1/);
+      assert.match(renderFollowUps(f.store, f.campaign.id), /Approved\. Sending unlocks [A-Z][a-z]{2} [0-9]{1,2}, [0-9]{4}/);
       f.db.prepare("UPDATE outreach SET sent_at = ? WHERE id = ?").run(new Date(Date.now() - 7 * 86_400_000).toISOString(), first.id);
       await f.sending.sendApproved(second.id, expected);
       const payload = JSON.parse(String(f.requests.at(-1)!.body)) as { raw: string; threadId?: string };
       assert.equal(payload.threadId, "thread-1");
       assert.match(Buffer.from(payload.raw, "base64url").toString("utf8"), new RegExp(`In-Reply-To: <${f.firstDelivery.id}@outbound-agent.local>`));
       const html = renderFollowUps(f.store, f.campaign.id);
-      assert.match(html, /Both follow-ups sent/);
+      assert.match(html, /Sequence complete/);
       assert.doesNotMatch(html, /Mark as replied/);
-      assert.throws(() => validateRequest(f.store, request), /ready for its next follow-up/);
+      assert.throws(() => validateRequest(f.store, request), /has no draft yet/);
     } finally { f.db.close(); }
   });
 

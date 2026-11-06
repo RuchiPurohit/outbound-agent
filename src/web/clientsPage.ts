@@ -1,8 +1,9 @@
 import type { OutboundStore } from "../db/store.js";
 import type { Client } from "../db/types.js";
 import {
-  buildDocument, buildStagePrompt, DOCUMENT_IDS, DOCUMENTS, missingInputs, SECTIONS, STAGE_DOCUMENTS, STAGE_IDS,
-  type DocumentId, type SetupField, type SetupSection, type StageId,
+  buildDocument, buildStagePrompt, DEFAULT_STEP_DELAY_DAYS, DOCUMENT_IDS, DOCUMENTS, MAX_SEQUENCE_STEPS, missingInputs,
+  SECTIONS, STAGE_DOCUMENTS, STAGE_IDS, STEP_KINDS,
+  type DocumentId, type SequenceStep, type SetupField, type SetupSection, type StageId,
 } from "../prompts/clientSetup.js";
 
 const escapeHtml = (value: unknown): string => String(value ?? "")
@@ -51,6 +52,19 @@ function statusBadge(missing: string[]): string {
     : '<span class="badge COMPLETED">Complete</span>';
 }
 
+/** Editor for the steps after the first email: one row per step plus a blank row to add one. */
+function sequenceEditor(client: Client): string {
+  const row = (step: SequenceStep | undefined, index: number): string => {
+    const kinds = Object.entries(STEP_KINDS).map(([value, label]) =>
+      `<option value="${value}"${(step?.kind ?? "email") === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("");
+    const legend = step ? `Step ${index + 2}` : "Add a step";
+    return `<fieldset class="seq-step${step ? "" : " seq-new"}"><legend>${legend}${step ? ` · ${escapeHtml(step.name)}` : ""}</legend><div class="seq-grid"><label><span>Type</span><select name="kind">${kinds}</select></label><label><span>Wait (days after previous step)</span><input type="number" name="delayDays" min="0" max="90" value="${step?.delayDays ?? DEFAULT_STEP_DELAY_DAYS}" required></label><label class="seq-name"><span>Name</span><input name="name" value="${escapeHtml(step?.name ?? "")}" maxlength="120" placeholder="${step ? "" : "e.g. LinkedIn connect"}"></label></div><label><span>Length rule (email steps)</span><input name="length" value="${escapeHtml(step?.length ?? "")}" maxlength="300" placeholder="Prefer 50–90 words and never exceed 110"></label><label><span>Template (email) or what to do (task)</span><textarea name="instructions" rows="${step ? Math.min(14, Math.max(4, step.instructions.split("\n").length + 1)) : 3}" maxlength="10000">${escapeHtml(step?.instructions ?? "")}</textarea></label>${step ? `<label class="inline setup-check"><input type="checkbox" name="remove" value="${index}"> Remove this step</label>` : '<small class="field-help">Leave the name and template empty to add nothing.</small>'}</fieldset>`;
+  };
+  const steps = client.setup.sequence;
+  const rows = steps.map((step, index) => row(step, index)).join("") + (steps.length < MAX_SEQUENCE_STEPS ? row(undefined, steps.length) : "");
+  return `<div class="sequence-editor" id="sequence-editor"><h4>Sequence</h4><p class="muted field-help">Step 1 is the first email (Email generation). Up to ${MAX_SEQUENCE_STEPS} more steps follow, each after its wait. Email steps are drafted as replies in the same thread and need approval and a send confirmation; task steps (LinkedIn, call, other) are done by you and marked done or skipped on the Sent &amp; follow-ups tab. Steps are kept by position: you can rename steps, edit templates, change waits, and add steps at the end at any time, but a step some prospects already reached keeps its type.</p><form method="post" action="/clients/${client.id}/sequence">${rows}<div class="actions"><button>Save sequence</button></div></form></div>`;
+}
+
 function sectionCard(client: Client, section: SetupSection, step: number | string, open: boolean): string {
   const values = client.setup[section.id];
   const missing = missingInputs(section.id, client.setup);
@@ -72,7 +86,7 @@ function sectionCard(client: Client, section: SetupSection, step: number | strin
   const source = section.source
     ? `<p class="muted field-help">Based on <code>${escapeHtml(section.source)}</code>, which workflows still use until this ${isDocument(id) ? "document" : "prompt"} replaces it.${reads}</p>` : "";
   const kind = isDocument(id) ? " doc" : isStage(id) ? " stage" : "";
-  return `<details class="card setup-section${kind}" id="section-${section.id}"${open ? " open" : ""}><summary><span class="step-no">${step}</span><span class="setup-title"><strong>${escapeHtml(section.title)}</strong><small>${escapeHtml(section.summary)}</small></span>${statusBadge(missing)}</summary>${source}<form method="post" action="/clients/${client.id}/sections/${section.id}">${nameField}${fields}<div class="actions"><button>Save ${escapeHtml(section.title.toLowerCase())}</button></div></form>${preview}</details>`;
+  return `<details class="card setup-section${kind}" id="section-${section.id}"${open ? " open" : ""}><summary><span class="step-no">${step}</span><span class="setup-title"><strong>${escapeHtml(section.title)}</strong><small>${escapeHtml(section.summary)}</small></span>${statusBadge(missing)}</summary>${source}${section.id === "follow-up-generation" ? sequenceEditor(client) : ""}<form method="post" action="/clients/${client.id}/sections/${section.id}">${section.id === "follow-up-generation" ? '<h4>Every follow-up email</h4>' : ""}${nameField}${fields}<div class="actions"><button>Save ${escapeHtml(section.title.toLowerCase())}</button></div></form>${preview}</details>`;
 }
 
 function clientDetail(store: OutboundStore, client: Client, openSection: string | null): string {

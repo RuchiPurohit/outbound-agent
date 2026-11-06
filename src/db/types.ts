@@ -140,7 +140,8 @@ export interface Outreach {
   bounceDetail: string | null;
 }
 
-export type FollowUpStep = 1 | 2;
+/** A step after the first email in a client's sequence, 1-based. */
+export type FollowUpStep = number;
 
 export type DeliveryStatus = "PREPARING" | "SENDING" | "SENT" | "FAILED" | "UNCERTAIN";
 

@@ -198,18 +198,23 @@ the existing `data/campaign-*.md` ignore pattern.
 
 ### Follow-ups
 
-Sent first touches move to the **Sent & follow-ups** tab. Each gets at most two
-threaded follow-ups, drafted one at a time for the emails you check:
+Sent first touches move to the **Sent & follow-ups** tab and follow their
+client's **sequence**, edited under Follow-up generation on the Clients page:
+up to 8 steps after the first email, each with a wait in days after the
+previous step. A step is either an **email** (drafted for the emails you check,
+sent as a reply in the same thread) or a **manual task** (LinkedIn, call, or
+other) that you do yourself and record with **Mark done** or **Skip step**; the
+next step's wait starts then.
+
+The default sequence is today's two emails, 7 days apart:
 
 1. **Follow-up 1** shares the live demo (`https://convokit.app/demo?for=<Company>&s=<scenario>`,
-   scenario per segment in [docs/PRODUCT.md](docs/PRODUCT.md)). Sendable 7 days
-   after the first email.
+   scenario per segment in [docs/PRODUCT.md](docs/PRODUCT.md)).
 2. **Follow-up 2** closes the loop: a referral ask or a polite stop, with the
-   same demo link. It can be drafted once Follow-up 1 is sent and is sendable 7
-   days after it.
+   same demo link.
 
-Both follow the templates in [docs/EMAIL_RULES.md](docs/EMAIL_RULES.md), stay
-`DRAFT` until you approve them, and are cancelled by **Mark as replied**.
+Email steps stay `DRAFT` until you approve them, and **Mark as replied** or
+**Mark as bounced** stops the whole sequence.
 
 **Approve all follow-up drafts** on the Sent emails card approves every
 follow-up draft shown there (after a browser confirmation) as `READY_TO_SEND`;

@@ -1,7 +1,10 @@
 import type { SqliteDatabase } from "./database.js";
 import { randomUUID } from "node:crypto";
 import { patternCandidates } from "../email/guessPatterns.js";
-import { defaultSetup, resolveSetup, type ClientSetup, type FieldValue, type SectionId } from "../prompts/clientSetup.js";
+import {
+  DEFAULT_STEP_DELAY_DAYS, defaultSetup, defaultSequence, resolveSetup,
+  type ClientSetup, type FieldValue, type SectionId, type SequenceStep,
+} from "../prompts/clientSetup.js";
 import type {
   Campaign, CampaignStatus, ChatFeatureStatus, ChatImplementation, Company, CompanyScoreBreakdown,
   Contact, EmailGuessConfidence, EmailGuessPattern, EmailRecoveryOutcome, EmailStatus, FollowUpStep, GuessVerification, Outreach, ResearchRecord,
@@ -11,11 +14,36 @@ import type {
 type Row = Record<string, unknown>;
 const now = (): string => new Date().toISOString();
 
-export const FOLLOW_UP_DELAY_DAYS = 7;
+const addDays = (iso: string, days: number): Date => new Date(new Date(iso).getTime() + days * 24 * 60 * 60 * 1000);
 
-/** When a follow-up to a sent first touch may be sent. */
-export function followUpDueAt(sentAt: string): Date {
-  return new Date(new Date(sentAt).getTime() + FOLLOW_UP_DELAY_DAYS * 24 * 60 * 60 * 1000);
+/** A manual task step the human marked done or skipped. */
+export interface SequenceTaskCompletion {
+  step: number;
+  status: "DONE" | "SKIPPED";
+  note: string | null;
+  completedAt: string;
+}
+
+/** One step after the first email, with where the prospect is in it. */
+export interface SequenceStepState {
+  /** 1-based position after the first email; follow-up emails store it as followUpStep. */
+  step: number;
+  def: SequenceStep;
+  /** The step's current (non-rejected) email, for email steps that have a draft. */
+  email?: Outreach;
+  completion?: SequenceTaskCompletion;
+  status: "SENT" | "DONE" | "SKIPPED" | "CURRENT" | "UPCOMING";
+  /** For the current step: when it may be sent or done. */
+  dueAt?: Date;
+}
+
+export interface SequenceState {
+  steps: SequenceStepState[];
+  current?: SequenceStepState;
+  /** Every step was sent, done, or skipped. */
+  done: boolean;
+  /** The prospect replied or the first email bounced, so no further step runs. */
+  stopped: boolean;
 }
 
 /** Local date and time a follow-up unlocks, e.g. "Oct 13, 2026, 2:34 PM". */
@@ -137,8 +165,9 @@ export class OutboundStore {
     const stored = JSON.parse(text(row, "settings")) as Record<string, Record<string, unknown>>;
     const defaults = defaultSetup("convokit");
     let changed = false;
+    // A missing sequence is rebuilt from the stored Follow-up 1/2 templates when read.
     for (const [sectionId, values] of Object.entries(defaults)) {
-      if (!stored[sectionId]) { stored[sectionId] = values; changed = true; }
+      if (sectionId !== "sequence" && !stored[sectionId]) { stored[sectionId] = values as Record<string, unknown>; changed = true; }
     }
     // The client documents replace the repository docs an earlier version listed here.
     const docs = stored.profile?.referenceDocs;
@@ -186,6 +215,35 @@ export class OutboundStore {
   updateClientSection(id: number, sectionId: SectionId, values: Record<string, FieldValue>): Client {
     const client = this.requireClient(id);
     const setup = resolveSetup({ ...client.setup, [sectionId]: values });
+    this.db.prepare("UPDATE clients SET settings = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(setup), now(), id);
+    return this.getClient(id)!;
+  }
+
+  /**
+   * Replaces a client's sequence. Steps are stored by position, so a position that already
+   * holds emails must stay an email step and one with completed tasks must stay a task;
+   * otherwise in-flight prospects' records would land under a different step.
+   */
+  updateClientSequence(id: number, steps: SequenceStep[]): Client {
+    const client = this.requireClient(id);
+    const used = (sql: string) => new Set((this.db.prepare(sql).all(id) as Row[]).map((row) => integer(row, "step")));
+    const emailSteps = used(`SELECT DISTINCT f.follow_up_step AS step FROM outreach f
+      JOIN contacts c ON c.id = f.contact_id JOIN companies co ON co.id = c.company_id
+      JOIN campaigns ca ON ca.id = co.campaign_id
+      WHERE ca.client_id = ? AND f.follow_up_of IS NOT NULL AND f.status != 'REJECTED'`);
+    const taskSteps = used(`SELECT DISTINCT t.step AS step FROM sequence_task_completions t
+      JOIN outreach o ON o.id = t.outreach_id JOIN contacts c ON c.id = o.contact_id
+      JOIN companies co ON co.id = c.company_id JOIN campaigns ca ON ca.id = co.campaign_id WHERE ca.client_id = ?`);
+    steps.forEach((step, index) => {
+      const position = index + 1;
+      if (emailSteps.has(position) && step.kind !== "email") {
+        throw new WorkflowError(`Step ${position + 1} already has drafted or sent emails for some prospects, so it must stay an email step. Add new steps after the existing ones instead.`);
+      }
+      if (taskSteps.has(position) && step.kind === "email") {
+        throw new WorkflowError(`Step ${position + 1} was already done as a task for some prospects, so it must stay a task step. Add new steps after the existing ones instead.`);
+      }
+    });
+    const setup = resolveSetup({ ...client.setup, sequence: steps });
     this.db.prepare("UPDATE clients SET settings = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(setup), now(), id);
     return this.getClient(id)!;
   }
@@ -1006,7 +1064,7 @@ export class OutboundStore {
         }
       }
       const step = this.nextFollowUpStep(parent.id);
-      if (!step) throw new WorkflowError("A follow-up already exists for this email");
+      if (!step) throw new WorkflowError("This email's next sequence step is not an email waiting for a draft");
       const body = input.body.trim();
       if (!body || Buffer.byteLength(body) > 100_000) {
         throw new WorkflowError("Email body must be nonempty and no larger than 100 KB");
@@ -1026,27 +1084,88 @@ export class OutboundStore {
     return row ? outreachFromRow(row) : undefined;
   }
 
-  /**
-   * The follow-up a first touch can receive next: 1 when it has none, 2 once
-   * Follow-up 1 was sent, and undefined while a follow-up is pending or both exist.
-   */
-  nextFollowUpStep(outreachId: number): FollowUpStep | undefined {
-    const first = this.getFollowUp(outreachId, 1);
-    if (!first) return 1;
-    if (first.status !== "SENT" || this.getFollowUp(outreachId, 2)) return undefined;
-    return 2;
+  /** The steps after the first email for this first touch: its client's sequence, else the default. */
+  sequenceFor(firstTouch: Outreach): SequenceStep[] {
+    const contact = this.requireContact(firstTouch.contactId);
+    const campaign = this.getCampaign(this.requireCompany(contact.companyId).campaignId);
+    const client = campaign?.clientId == null ? undefined : this.getClient(campaign.clientId);
+    return client ? client.setup.sequence : defaultSequence();
   }
 
   /**
-   * When a follow-up may be sent: Follow-up 1 a week after the first touch,
-   * Follow-up 2 a week after Follow-up 1. Undefined until that email is sent.
+   * Where a sent first touch is in its sequence. Each step is due its wait after the previous
+   * step was sent (email) or done/skipped (task). Steps already recorded are kept even when the
+   * client's sequence was later shortened.
    */
+  sequenceState(outreachId: number): SequenceState {
+    const first = this.requireOutreach(outreachId);
+    if (first.followUpOf !== null) throw new WorkflowError("Sequences belong to a first-touch email");
+    const defs = this.sequenceFor(first);
+    const completions = new Map(this.listSequenceTaskCompletions(outreachId).map((item) => [item.step, item]));
+    const recorded = this.listFollowUps(outreachId).reduce((max, item) => Math.max(max, item.followUpStep ?? 0), 0);
+    const count = Math.max(defs.length, recorded, ...completions.keys());
+    const steps: SequenceStepState[] = [];
+    let previousDoneAt = first.sentAt ?? undefined;
+    let current: SequenceStepState | undefined;
+    for (let step = 1; step <= count; step += 1) {
+      const def = defs[step - 1] ?? { kind: "email", delayDays: DEFAULT_STEP_DELAY_DAYS, name: `Step ${step + 1}`, instructions: "", length: "" };
+      const email = this.getFollowUp(outreachId, step);
+      const completion = completions.get(step);
+      const state: SequenceStepState = { step, def, email, completion, status: "UPCOMING" };
+      if (email?.status === "SENT" && email.sentAt) {
+        state.status = "SENT";
+        previousDoneAt = email.sentAt;
+      } else if (completion) {
+        state.status = completion.status;
+        previousDoneAt = completion.completedAt;
+      } else if (!current && previousDoneAt) {
+        state.status = "CURRENT";
+        state.dueAt = addDays(previousDoneAt, def.delayDays);
+        current = state;
+      }
+      steps.push(state);
+    }
+    return { steps, current, done: !current && steps.every(({ status }) => status !== "UPCOMING"),
+      stopped: first.status !== "SENT" };
+  }
+
+  /**
+   * The email step a first touch can receive a draft for next, or undefined when the current
+   * step is a manual task, already has a draft, or the sequence is finished or stopped.
+   */
+  nextFollowUpStep(outreachId: number): FollowUpStep | undefined {
+    const state = this.sequenceState(outreachId);
+    const current = state.current;
+    return !state.stopped && current && current.def.kind === "email" && !current.email ? current.step : undefined;
+  }
+
+  /** When a follow-up email may be sent; undefined until the previous step is sent or completed. */
   followUpSendableAt(followUp: Outreach): Date | undefined {
-    if (followUp.followUpOf === null) return undefined;
-    const previous = followUp.followUpStep === 2
-      ? this.getFollowUp(followUp.followUpOf, 1)
-      : this.getOutreach(followUp.followUpOf);
-    return previous?.status === "SENT" && previous.sentAt ? followUpDueAt(previous.sentAt) : undefined;
+    if (followUp.followUpOf === null || followUp.followUpStep === null) return undefined;
+    const state = this.sequenceState(followUp.followUpOf).steps[followUp.followUpStep - 1];
+    return state?.status === "CURRENT" ? state.dueAt : undefined;
+  }
+
+  listSequenceTaskCompletions(outreachId: number): SequenceTaskCompletion[] {
+    return (this.db.prepare("SELECT * FROM sequence_task_completions WHERE outreach_id = ? ORDER BY step")
+      .all(outreachId) as Row[]).map((row) => ({ step: integer(row, "step"), status: text(row, "status") as "DONE" | "SKIPPED",
+      note: nullableText(row, "note"), completedAt: text(row, "completed_at") }));
+  }
+
+  /** Records that the human did (or skipped) the current manual task step of a sequence. */
+  completeSequenceTask(outreachId: number, step: number, status: "DONE" | "SKIPPED", note?: string): SequenceTaskCompletion {
+    return this.db.transaction(() => {
+      const state = this.sequenceState(outreachId);
+      if (state.stopped) throw new WorkflowError("The prospect replied or the first email bounced; the sequence has stopped");
+      const current = state.current;
+      if (!current || current.step !== step) throw new WorkflowError("Only the current step of the sequence can be completed");
+      if (current.def.kind === "email" || current.email) throw new WorkflowError("Email steps are completed by sending them");
+      const cleanNote = note?.trim() || null;
+      if (cleanNote && cleanNote.length > 1000) throw new WorkflowError("Keep the note under 1000 characters");
+      this.db.prepare("INSERT INTO sequence_task_completions (outreach_id, step, status, note, completed_at) VALUES (?, ?, ?, ?, ?)")
+        .run(outreachId, step, status, cleanNote, now());
+      return this.listSequenceTaskCompletions(outreachId).find((item) => item.step === step)!;
+    })();
   }
 
   listFollowUps(outreachId: number): Outreach[] {
@@ -1192,7 +1311,7 @@ export class OutboundStore {
       if (parent.status === "BOUNCED") throw new WorkflowError("The first email bounced; this follow-up will not be sent");
       if (parent.status !== "SENT" || !parent.sentAt) throw new WorkflowError("The first-touch email has not been sent");
       const due = this.followUpSendableAt(draft);
-      if (!due) throw new WorkflowError("Follow-up 1 must be sent before Follow-up 2");
+      if (!due) throw new WorkflowError("The previous step of the sequence must be sent or completed first");
       if (Date.now() < due.getTime()) {
         throw new WorkflowError(`This follow-up is not due until ${formatDueAt(due)}`);
       }

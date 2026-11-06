@@ -279,12 +279,16 @@ for the contact IDs explicitly checked in the dashboard generation request.
 Follow-up generation is a separate dashboard workflow:
 `prompts/follow-up-generation.md`. Generate follow-up drafts only for the sent
 first-touch outreach IDs explicitly checked in the Sent & follow-ups tab.
-Each first touch gets at most two follow-ups, drafted one at a time: Follow-up 1
-(the live demo link) and, once Follow-up 1 was sent, Follow-up 2 (closing the
-loop). Follow-ups stay DRAFT until human review, keep the first touch's subject
-and cited signal, and may be sent only 7 days after the previous email in the
-thread, after explicit send confirmation, and only if the prospect has not been
-marked as replied and the first touch has not been marked as bounced.
+Each first touch follows its client's sequence (Clients page): up to 8 steps
+after the first email, each with a wait in days after the previous step. Email
+steps are drafted one at a time, only for the current step; the default
+sequence is Follow-up 1 (the live demo link) and Follow-up 2 (closing the loop),
+7 days apart. Task steps (LinkedIn, call, other) are done by the human and
+marked done or skipped in the dashboard; never draft or perform them.
+Follow-ups stay DRAFT until human review, keep the first touch's subject and
+cited signal, and may be sent only once their step is due, after explicit send
+confirmation, and only if the prospect has not been marked as replied and the
+first touch has not been marked as bounced.
 
 Gmail sending is a deterministic dashboard operation, never a research task.
 Only an explicit human send confirmation may dispatch READY_TO_SEND outreach.

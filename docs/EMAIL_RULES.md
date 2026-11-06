@@ -153,13 +153,17 @@ engagement,” “touch base,” or “circle back.”
 
 Follow-ups are written by `prompts/follow-up-generation.md`. Each follow-up is
 its own outreach record linked to the first touch, never extra text inside the
-first-touch record. Both reply in the same thread (`Re: <original subject>`),
-keep the first touch's cited signal, and need explicit human approval and send
-confirmation. Follow-up 1 can be sent 7 days after the first touch and
-Follow-up 2 7 days after Follow-up 1, and neither once the prospect is marked
-as replied. There is no third follow-up.
+first-touch record. Every follow-up replies in the same thread
+(`Re: <original subject>`), keeps the first touch's cited signal, and needs
+explicit human approval and send confirmation.
 
-Both follow-ups:
+The client's sequence (Clients page) sets how many steps follow the first
+email, each step's wait, and its template; a drafting request lists the step to
+write. The default sequence is the two emails below: Follow-up 1 can be sent 7
+days after the first touch and Follow-up 2 7 days after Follow-up 1. No step
+runs once the prospect is marked as replied or the first email bounced.
+
+Every follow-up email:
 
 - Carry exactly one link, the live demo, built per docs/PRODUCT.md with the
   prospect's company name and the scenario matching their segment.

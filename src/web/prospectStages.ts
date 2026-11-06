@@ -1,4 +1,4 @@
-import { FOLLOW_UP_DELAY_DAYS, formatDueAt, type OutboundStore } from "../db/store.js";
+import { formatDueAt, type OutboundStore } from "../db/store.js";
 import type { Outreach } from "../db/types.js";
 import { guessVerificationBadge } from "./emailResults.js";
 
@@ -77,9 +77,8 @@ export function renderOutreachReview(store: OutboundStore, campaignId: number, d
   const parent = draft.followUpOf === null ? undefined : store.getOutreach(draft.followUpOf);
   const dueAt = store.followUpSendableAt(draft);
   const notDue = dueAt !== undefined && Date.now() < dueAt.getTime();
-  // Follow-up 2 has no send date until Follow-up 1 itself was sent.
+  // A later step has no send date until the step before it was sent or completed.
   const awaitingPrevious = parent !== undefined && parent.status === "SENT" && dueAt === undefined;
-  const previousEmail = draft.followUpStep === 2 ? "Follow-up 1" : "the first email";
   const recipient = store.getContactRecipient(contact.id);
   const signal = draft.researchId === null ? undefined : store.getResearchRecord(draft.researchId);
   const delivery = store.listEmailDeliveries().find((item) => item.outreachId === draft.id);
@@ -106,8 +105,8 @@ export function renderOutreachReview(store: OutboundStore, campaignId: number, d
         ? active ? '<p class="muted">Wait for the active workflow before sending.</p>'
           : parent?.status === "REPLIED" ? '<p class="muted">The prospect replied, so this follow-up will not be sent.</p>'
           : parent?.status === "BOUNCED" ? '<p class="muted">The first email bounced, so this follow-up will not be sent.</p>'
-          : awaitingPrevious ? `<p class="muted">Approved. Sending unlocks ${FOLLOW_UP_DELAY_DAYS} days after Follow-up 1 is sent.</p>`
-          : notDue ? `<p class="muted">Approved. Sending unlocks ${escapeHtml(formatDueAt(dueAt!))}, ${FOLLOW_UP_DELAY_DAYS} days after ${previousEmail}.</p>`
+          : awaitingPrevious ? '<p class="muted">Approved. Sending unlocks after the previous step of the sequence is sent or completed.</p>'
+          : notDue ? `<p class="muted">Approved. Sending unlocks ${escapeHtml(formatDueAt(dueAt!))}.</p>`
           : `<a class="button" href="/campaigns/${campaignId}/outreach/${draft.id}/send">Review &amp; send via ${escapeHtml(transportLabel)}</a>`
         : '<div class="notice">This email needs fresh approval before sending because its recipient or content was not captured by the original approval.</div>'}<form method="post" action="/campaigns/${campaignId}/outreach/${draft.id}/restore" style="margin-top:12px"><button class="secondary" ${active ? "disabled" : ""}>Return to draft for review</button></form>`
     : delivery?.status === "SENT"
